@@ -12,6 +12,8 @@
         # extract: { minConfidence: 0.6, repairRetries: 1 }
         # community: { recomputeThreshold: 0.05 }
         # dataDir: '/abs/path'                     # 缺省 $DSH_HOME/graphrag → ~/.dsh/graphrag
+    - id: graphrag-rpc
+      name: 'dsh-kylin-vibe/rpc'
     - id: graphrag-tools
       name: 'dsh-kylin-vibe/tool'
     # M3: - id: graphrag-config
