@@ -2,13 +2,31 @@
 
 **dsh-kylin-vibe**：DeepSeek Harness（dsh）与 QiLin（麒麟）双引擎的 GraphRAG 插件。把显式授权的本地语料（代码/文档）增量索引成知识图谱（实体-关系-社区），以 agent 工具形式暴露，供模型在任务执行中做关系性/全局性推理检索。
 
-当前阶段：**M3-W1 完成（2026-10-02，103/103 测试）——多知识库落地**：KB 一等实体（kbs.json 注册表 / 命名 / 建库 / 删除 / 迁移）、provider v2 解析链（显式 kb 参数 → cwd 命中 → 唯一库 → 候选名单）、工具 kb 参数与 create 语义，均经真实宿主（~/.kcoder-dev）回归验证（旧布局迁移实测 + 多库显式选择检索全通）。下一步 M3-W2：Web RPC + KB 管理页 + 索引进度（见 [0207](docs/02-design/0207-用户入口与多知识库设计.md)）。——用户质询"用户入口 / 任务绑定知识库 / 准确性验证"暴露 ADR-10 判断错误，面板从可选件升级为核心（ADR-12）。M3 按 [0207 用户入口与多知识库设计](docs/02-design/0207-用户入口与多知识库设计.md) 执行：KB 一等实体（多库命名/选择/绑定）→ Web 管理面板（建库/索引/进度/浏览）→ 抽样审查（精确率 + 体检报告）→ QiLin 通道。详见 [实施计划](docs/03-plan/0301-实施计划.md)。
+当前状态：**v0.1.0 已发布**（2026-10-02，108/108 测试）——GraphRAG 核心引擎（local/global/traversal 三模式）+ agent 五工具（审批门 + 多库选择）+ 双语 Web 面板（建库 / 索引进度 / 图谱浏览 / 准确性抽查 / 体检报告）；dsh 0.2.0-rc.2 与 QiLin 3.0.7 双引擎真实宿主验证。发布说明见 [release/v0.1.0](release/v0.1.0.md)，开发历程见 [实施计划](docs/03-plan/0301-实施计划.md)。
+
+## 用户指南
+
+**安装**（重启 `dsh web` / KCoder / QiLin 生效）：
+
+```sh
+dsh plugin --profile web add dsh-kylin-vibe        # npm registry（推荐）
+dsh plugin --profile web add github:kkutysllb/dsh-kylin-vibe#v0.1.0   # GitHub 直装
+qilin plugin --profile <name> add dsh-kylin-vibe   # QiLin 通道（需 3.0.0+）
+```
+
+**用起来**（三条入口）：
+
+1. **构建知识库**：侧边栏「知识图谱」打开面板 → 新建知识库（名称 + 授权目录绝对路径）→ 点「索引」，进度实时可见；agent 侧也可直接调 `graphrag_index`（需审批）。
+2. **任务使用图谱**：agent 执行任务时自动可调 `graphrag_query`（local/global 检索）、`graphrag_graph`（多跳遍历）、`graphrag_status`；多库用 `kb` 参数指定，不指定时按工作区路径/唯一库自动解析。
+3. **验证准确性**：面板「浏览 / 审查」查看实体与邻居关系及原文引用；「准确性抽查」对低置信关系人工判定（标记"错误"的关系检索期自动排除）；「体检报告」看覆盖率与抽样精确率。
+
+界面语言跟随引擎设置自动切换（中文/English）。
 
 开发速览：
 
 ```sh
 pnpm install          # autoInstallPeers=false（宿主 peer 由宿主注入）
-pnpm check            # typecheck + 92 测试 + esbuild 三入口 bundle + smoke
+pnpm check            # typecheck + 108 测试 + 五 bundle 构建 + smoke
 pnpm fixtures:gen     # 重放生成冻结评测集（种子 42，逐字节可复现）
 pnpm eval             # 冻结评测：--config flat-bm25|graph-local|graph-full（graph 配置自动附门槛判定）
 
