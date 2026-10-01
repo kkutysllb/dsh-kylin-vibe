@@ -21,6 +21,7 @@ export interface Translate {
 }
 
 export interface KbRuntime {
+  readonly rpc: ClientRpc
   readonly source: {
     getSnapshot(): PanelState
     subscribe(listener: () => void): () => void
@@ -107,6 +108,7 @@ export function createKbRuntime(deps: KbRuntimeDeps): KbRuntime {
   }
 
   const runtime: KbRuntime = {
+    rpc: deps.rpc,
     source,
     notice: {
       getSnapshot: (): string | undefined => noticeText,

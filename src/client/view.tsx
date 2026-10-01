@@ -3,6 +3,7 @@
  */
 
 import { useEffect, useSyncExternalStore, useState } from 'react'
+import { BrowseReviewView } from './browse-review.tsx'
 
 import type { KbView } from './protocol.ts'
 import { sortKbs, type KbRuntime, type Translate } from './runtime.ts'
@@ -74,6 +75,7 @@ function CreateForm(props: { readonly runtime: KbRuntime; readonly t: Translate;
 
 function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; readonly t: Translate }): React.ReactElement {
   const { kb, runtime, t } = props
+  const [exploreOpen, setExploreOpen] = useState(false)
   const progress = kb.progress
   const running = progress !== null && progress.phase !== 'done' && progress.phase !== 'error'
   const pct = progress !== null && progress.filesTotal > 0
@@ -123,8 +125,10 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
       <div className='gv-actions'>
         <button className='gv-btn gv-btn-primary' disabled={running || kb.managed === 'config' && kb.roots.length === 0} onClick={() => void runtime.startIndex(kb.id)}>{t('index')}</button>
         {running && <button className='gv-btn gv-btn-danger' onClick={() => void runtime.cancel(kb.id)}>{t('cancelIndex')}</button>}
+        <button className='gv-btn' onClick={() => setExploreOpen(open => !open)}>{exploreOpen ? t('closeExplore') : t('explore')}</button>
         {kb.managed !== 'config' && <button className='gv-btn gv-btn-danger' onClick={remove}>{t('delete')}</button>}
       </div>
+      {exploreOpen && <BrowseReviewView runtime={runtime} t={t} kbId={kb.id} />}
     </div>
   )
 }

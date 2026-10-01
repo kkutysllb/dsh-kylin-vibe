@@ -8,6 +8,14 @@ export function installStyles(): () => void {
 }
 
 const CSS = `
+.gv-tabs { display: flex; gap: 6px; margin-bottom: 10px; }
+.gv-tab-active { background: rgba(47,111,235,.15); border-color: #2f6feb; }
+.gv-search { display: flex; gap: 8px; margin-bottom: 10px; }
+.gv-search input { flex: 1; border: 1px solid var(--kv-border, rgba(128,128,128,.35)); border-radius: 6px; padding: 6px 8px; background: transparent; color: inherit; font-size: 13px; }
+.gv-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+.gv-table td { padding: 3px 8px 3px 0; border-top: 1px solid var(--kv-border, rgba(128,128,128,.15)); }
+.gv-evidence { margin: 6px 0; }
+.gv-pre { background: rgba(128,128,128,.08); border-radius: 6px; padding: 8px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
 .gv-panel { padding: 16px; overflow-y: auto; height: 100%; box-sizing: border-box; font-size: 13px; }
 .gv-panel h2 { margin: 0 0 4px; font-size: 16px; }
 .gv-sub { color: var(--kv-text-secondary, #888); margin: 0 0 12px; }

@@ -42,6 +42,48 @@ export interface TraverseInput {
   readonly maxNodes?: number
 }
 
+/** 浏览页实体卡（含邻居边）。 */
+export interface EntityCard {
+  readonly id: number
+  readonly name: string
+  readonly type: string
+  readonly description: string | null
+  readonly degree: number
+  readonly communityId: number | null
+  readonly neighbors: readonly EntityNeighbor[]
+}
+
+export interface EntityNeighbor {
+  readonly dir: 'out' | 'in'
+  readonly type: string
+  readonly weight: number
+  readonly other: string
+  readonly evidence: readonly { readonly path: string; readonly lines: string }[]
+}
+
+/** 审查页抽样关系卡。 */
+export interface ReviewSample {
+  readonly id: number
+  readonly s: string
+  readonly r: string
+  readonly o: string
+  readonly confidence: number
+  readonly evidence: readonly { readonly path: string; readonly startLine: number; readonly endLine: number; readonly text: string }[]
+}
+
+/** 体检报告（0207 §3.4 结论卡）。 */
+export interface HealthReport {
+  readonly kbName: string
+  readonly files: { readonly indexed: number; readonly stale: number; readonly quarantined: number }
+  readonly coverage: number | null
+  readonly quarantineRate: number | null
+  readonly sampled: number
+  readonly correct: number
+  readonly samplePrecision: number | null
+  readonly excludedRelations: number
+  readonly lastIndexAt: number | null
+}
+
 export interface GraphRagProvider {
   readonly id: string
   // ── KB 管理面（0207 §2.2）──
@@ -63,6 +105,11 @@ export interface GraphRagProvider {
   /** 审批卡 dry-run 成本估算（0204 §3）：将处理的脏文件数与预计 LLM 调用。
    * 同步实现（scan+diff 纯本地）。 */
   estimate(target: KbRef | undefined, opts: IndexOptions, cwd?: string): { readonly files: number; readonly estCalls: number }
+  // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
+  browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
+  sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
+  reviewRelation(target: KbRef, relationId: number, verdict: 'correct' | 'wrong' | 'unsure'): { readonly excluded: boolean }
+  healthReport(target: KbRef): HealthReport
 }
 
 export interface GraphRagService {

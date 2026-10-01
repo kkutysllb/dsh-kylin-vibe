@@ -68,3 +68,44 @@ export async function unwrap<T>(promise: Promise<unknown>): Promise<T> {
   const message = typeof raw?.error?.message === 'string' ? raw.error.message : String(raw?.error?.code ?? 'unknown')
   throw Object.assign(new Error(message), { code })
 }
+
+// ── 浏览与审查（0207 §3.3/§3.4）──────────────────────────────────────────
+
+export interface EntityNeighbor {
+  readonly dir: 'out' | 'in'
+  readonly type: string
+  readonly weight: number
+  readonly other: string
+  readonly evidence: readonly { readonly path: string; readonly lines: string }[]
+}
+
+export interface EntityCard {
+  readonly id: number
+  readonly name: string
+  readonly type: string
+  readonly description: string | null
+  readonly degree: number
+  readonly communityId: number | null
+  readonly neighbors: readonly EntityNeighbor[]
+}
+
+export interface ReviewSample {
+  readonly id: number
+  readonly s: string
+  readonly r: string
+  readonly o: string
+  readonly confidence: number
+  readonly evidence: readonly { readonly path: string; readonly startLine: number; readonly endLine: number; readonly text: string }[]
+}
+
+export interface HealthReport {
+  readonly kbName: string
+  readonly files: { readonly indexed: number; readonly stale: number; readonly quarantined: number }
+  readonly coverage: number | null
+  readonly quarantineRate: number | null
+  readonly sampled: number
+  readonly correct: number
+  readonly samplePrecision: number | null
+  readonly excludedRelations: number
+  readonly lastIndexAt: number | null
+}

@@ -549,6 +549,63 @@ export class SqliteGraphStore {
     }
   }
 
+  /** 实体搜索（浏览页前缀/子串检索，FTS 命中 + LIKE 兜底）。 */
+  searchEntityCards(terms: readonly string[], limit: number): readonly EntityRowRaw[] {
+    const match = terms.map(t => `"${t.replaceAll('"', '""')}"`).join(' OR ')
+    const byFts = this.db.prepare(
+      `SELECT e.* FROM entity_fts f JOIN entity e ON e.id = f.rowid WHERE entity_fts MATCH ? ORDER BY e.degree DESC LIMIT ?`,
+    ).all(match, BigInt(limit)) as unknown as EntityRowRaw[]
+    if (byFts.length > 0) return byFts
+    const likes = terms.map(() => 'norm_name LIKE ?').join(' OR ')
+    const params = terms.map(t => `%${t.toLowerCase()}%`)
+    return this.db.prepare(
+      `SELECT * FROM entity WHERE ${likes} ORDER BY degree DESC LIMIT ?`,
+    ).all(...params, BigInt(limit)) as unknown as EntityRowRaw[]
+  }
+
+  /** 浏览页抽样审查：按置信度升序抽 N 条关系（低置信优先，确定性）。 */
+  sampleRelations(limit: number, excludeIds: readonly number[]): readonly { relation: Relation; srcName: string; dstName: string }[] {
+    const excl = excludeIds.length > 0 ? `AND id NOT IN (${excludeIds.map(() => '?').join(',')})` : ''
+    const params: (number | bigint)[] = [...excludeIds.map(BigInt), BigInt(limit)]
+    const rows = this.db.prepare(
+      `SELECT * FROM relation WHERE confidence < 1.0 ${excl} ORDER BY confidence ASC, id ASC LIMIT ?`,
+    ).all(...params) as unknown as RelationRowRaw[]
+    const need = limit - rows.length
+    let rest = rows
+    if (need > 0) {
+      const full = this.db.prepare(
+        `SELECT * FROM relation WHERE confidence >= 1.0 ${excl} ORDER BY id ASC LIMIT ?`,
+      ).all(...params) as unknown as RelationRowRaw[]
+      rest = [...rows, ...full]
+    }
+    return rest.map(r => {
+      const rel = this.mapRelation(r)
+      const src = this.getEntityById(rel.srcId)
+      const dst = this.getEntityById(rel.dstId)
+      return { relation: rel, srcName: src?.name ?? '?', dstName: dst?.name ?? '?' }
+    })
+  }
+
+  /** 关系的 mention 原文（审查页右栏）。 */
+  relationEvidence(relationId: number): readonly { path: string; startLine: number; endLine: number; text: string; spanStart: number | null; spanEnd: number | null }[] {
+    const rows = this.db.prepare(
+      `SELECT s.path, c.start_line, c.end_line, c.text, m.span_start AS spanStart, m.span_end AS spanEnd
+       FROM relation_evidence re
+       JOIN chunk c ON c.id = re.chunk_id
+       JOIN source s ON s.id = c.source_id
+       LEFT JOIN mention m ON m.chunk_id = re.chunk_id AND (m.entity_id = (SELECT src_id FROM relation WHERE id = ?) OR m.entity_id = (SELECT dst_id FROM relation WHERE id = ?))
+       WHERE re.relation_id = ? LIMIT 4`,
+    ).all(BigInt(relationId), BigInt(relationId), BigInt(relationId)) as Array<Record<string, unknown>>
+    return rows.map(r => ({
+      path: r.path as string,
+      startLine: Number(r.start_line as number | bigint),
+      endLine: Number(r.end_line as number | bigint),
+      text: r.text as string,
+      spanStart: r.spanStart === null || r.spanStart === undefined ? null : Number(r.spanStart as number | bigint),
+      spanEnd: r.spanEnd === null || r.spanEnd === undefined ? null : Number(r.spanEnd as number | bigint),
+    }))
+  }
+
   /** 给定实体集内部的边（local 证据组装用）。 */
   relationsAmong(entityIds: ReadonlySet<number>, limit = 40): readonly EdgeRow[] {
     if (entityIds.size === 0) return []
@@ -719,6 +776,15 @@ export class SqliteGraphStore {
       this.db.prepare('DELETE FROM entity WHERE id = ?').run(BigInt(ent.id)) // CASCADE: relation/alias/mention
       return { deleted: { chunks: 0, mentions, relations, entities: 1, summaries: 0 }, communitiesRebuilt: 0 }
     })
+  }
+
+  /** 审查排除：标记关系（检索组装时过滤），可逆。 */
+  excludeRelation(id: number): void {
+    this.db.prepare('UPDATE relation SET confidence = -1 WHERE id = ?').run(BigInt(id))
+  }
+
+  excludedRelationCount(): number {
+    return Number((this.db.prepare('SELECT COUNT(*) AS c FROM relation WHERE confidence < 0').get() as { c: number | bigint }).c)
   }
 
   /** 孤儿清理：无 mention 且度为 0 的实体（0203 §1.6）。返回删除数。

@@ -21,15 +21,7 @@ import {
   type KnowledgeBase, type IndexReport, type IndexStatus, type Subgraph,
 } from './core/types.ts'
 import type { Context } from '@deepseek-ai/cordis'
-import { GraphRagServiceImpl, type GraphRagProvider, type IndexOptions, type QueryInput, type TraverseInput } from './index.ts'
-
-// ── KB 引用 ──────────────────────────────────────────────────────────────────
-
-/** 工具/面板侧的 KB 定位：id 或 name 任一；缺省走默认解析链（0207 §2.2）。 */
-export interface KbRef {
-  readonly id?: string
-  readonly name?: string
-}
+import { GraphRagServiceImpl, type EntityCard, type GraphRagProvider, type HealthReport, type IndexOptions, type KbRef, type QueryInput, type ReviewSample, type TraverseInput } from './index.ts'
 
 // ── 配置（0205 §7 / 0207 §2：防御性钳制）───────────────────────────────────
 
@@ -139,6 +131,9 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   private readonly stores = new Map<string, SqliteGraphStore>()
   private readonly directLlm: LlmCompleter | null
   private cachedLlm: LlmCompleter | null | undefined
+  /** 审查状态（按 KB）：排除的关系 id 集 + 抽样统计。 */
+  private readonly reviewExclude = new Map<string, Set<number>>()
+  private readonly reviewStats = new Map<string, { sampled: number; correct: number }>()
 
   constructor(private readonly config: ProviderConfig, private readonly deps: LocalProviderDeps, declared: readonly { name: string; roots: string[]; description: string | null }[] = []) {
     this.directLlm = deps.llm ?? null
@@ -443,6 +438,102 @@ export class LocalGraphRagProvider implements GraphRagProvider {
 
   async forget(target: KbRef, inner: ForgetTarget): Promise<ForgetReport> {
     return this.storeOf(this.resolveKb(target)).forget(inner)
+  }
+
+  // ── 浏览与审查面（0207 §3.3/§3.4）────────────────────────────────────
+
+  /** 浏览页：实体搜索（含邻居与原文引用）。 */
+  browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[] {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const { extractTerms } = require('./core/lexical.ts') as never as typeof import('./core/lexical.ts')
+    const terms = extractTerms(query)
+    const raws = terms.length > 0
+      ? store.searchEntityCards(terms, limit)
+      : (store.allEntities().slice(0, limit) as unknown as Array<{ id: number | bigint; norm_name: string; name: string; type: string; description: string | null; community_id: number | bigint | null; degree: number | bigint }>)
+    return raws.map(r => {
+      const e = this.mapEntityPublic(r)
+      const neighbors = store.neighbors(e.id, 'both').map(edge => {
+        const rel = edge.relation
+        const evidence = store.relationEvidence(rel.id).slice(0, 1).map(ev => ({ path: ev.path, lines: `${ev.startLine}-${ev.endLine}` }))
+        return {
+          dir: rel.srcId === e.id ? ('out' as const) : ('in' as const),
+          type: rel.type,
+          weight: rel.weight,
+          other: rel.srcId === e.id ? edge.dstName : edge.srcName,
+          evidence,
+        }
+      })
+      return { id: e.id, name: e.name, type: e.type, description: e.description, degree: e.degree, communityId: e.communityId, neighbors }
+    })
+  }
+
+  /** 审查页：分层抽样（低置信优先，排除已判）。 */
+  sampleForReview(target: KbRef, limit: number): readonly ReviewSample[] {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const excluded = [...(this.reviewExclude.get(kb.id) ?? [])]
+    return store.sampleRelations(limit, excluded).map(x => ({
+      id: x.relation.id,
+      s: x.srcName,
+      r: x.relation.type,
+      o: x.dstName,
+      confidence: x.relation.confidence,
+      evidence: store.relationEvidence(x.relation.id).map(ev => ({ path: ev.path, startLine: ev.startLine, endLine: ev.endLine, text: ev.text })),
+    }))
+  }
+
+  /** 审查判定：correct/wrong 计入抽样统计；wrong 进排除清单（置信度置 -1）。 */
+  reviewRelation(target: KbRef, relationId: number, verdict: 'correct' | 'wrong' | 'unsure'): { readonly excluded: boolean } {
+    const kb = this.resolveKb(target)
+    if (verdict === 'unsure') return { excluded: false }
+    const stats = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0 }
+    stats.sampled += 1
+    if (verdict === 'correct') stats.correct += 1
+    this.reviewStats.set(kb.id, stats)
+    if (verdict !== 'wrong') return { excluded: false }
+    const store = this.storeOf(kb)
+    const set = this.reviewExclude.get(kb.id) ?? new Set<number>()
+    set.add(relationId)
+    this.reviewExclude.set(kb.id, set)
+    store.excludeRelation(relationId)
+    return { excluded: true }
+  }
+
+  /** 体检报告（0207 §3.4 结论卡）。 */
+  healthReport(target: KbRef): HealthReport {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const sources = store.listSources()
+    const indexed = sources.filter(s => s.state === 'merged').length
+    const stale = sources.filter(s => s.state !== 'merged' && s.state !== 'deleted').length
+    const quarantined = sources.filter(s => s.state === 'quarantined').length
+    const review = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0 }
+    const excluded = this.reviewExclude.get(kb.id)
+    const excludedCount = excluded !== undefined && excluded.size > 0 ? excluded.size : store.excludedRelationCount()
+    const scannedTotal = indexed + stale
+    return {
+      kbName: kb.name,
+      files: { indexed, stale, quarantined },
+      coverage: scannedTotal === 0 ? null : indexed / scannedTotal,
+      quarantineRate: (indexed + quarantined) === 0 ? null : quarantined / (indexed + quarantined),
+      sampled: review.sampled,
+      correct: review.correct,
+      samplePrecision: review.sampled === 0 ? null : review.correct / review.sampled,
+      excludedRelations: excludedCount,
+      lastIndexAt: kb.lastIndexedAt,
+    }
+  }
+
+  private mapEntityPublic(r: { id: number | bigint; norm_name: string; name: string; type: string; description: string | null; community_id: number | bigint | null; degree: number | bigint }) {
+    return {
+      id: Number(r.id),
+      name: r.name,
+      type: r.type,
+      description: r.description,
+      communityId: r.community_id === null ? null : Number(r.community_id),
+      degree: Number(r.degree),
+    }
   }
 
   estimate(target: KbRef | undefined, opts: IndexOptions): { readonly files: number; readonly estCalls: number } {
