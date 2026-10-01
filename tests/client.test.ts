@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { createKbRuntime } from '../src/client/runtime.ts'
+import { dictionaries, en, NS, zh } from '../src/client/locales.ts'
 import { installStyles } from '../src/client/styles.ts'
 
 test('runtime：快照轮询 + 动作刷新（RPC 桩）', async () => {
@@ -43,4 +44,27 @@ test('styles：返回清理函数（DOM 缺席环境跳过）', () => {
   const dispose = installStyles()
   assert.equal(typeof dispose, 'function')
   dispose()
+})
+
+test('styles：幂等注入（同一 id 不重复落 <style>）', () => {
+  if (typeof document === 'undefined') return
+  const d1 = installStyles()
+  const d2 = installStyles()
+  assert.equal(document.querySelectorAll('style#ky-graphrag-styles').length, 1)
+  d1()
+  d2()
+})
+
+test('locales：zh/en 键完全对齐 + NS 命名空间 + 占位符一致', () => {
+  const zhKeys = Object.keys(zh).sort()
+  const enKeys = Object.keys(en).sort()
+  assert.deepEqual(enKeys, zhKeys)
+  assert.ok(Object.values({ ...zh, ...en }).every(v => typeof v === 'string' && v.length > 0))
+  assert.match(NS, /^[A-Za-z]+$/)
+  // 占位符集合必须逐键一致（{name} 这类参数漏译会在运行时露出花括号原文）
+  for (const key of Object.keys(zh) as (keyof typeof zh)[]) {
+    const ph = (s: string) => new Set(s.match(/\{(\w+)\}/g) ?? [])
+    assert.deepEqual(ph(en[key]), ph(zh[key]), `占位符不一致: ${key}`)
+  }
+  assert.equal(Object.keys(dictionaries).sort().join(','), 'en,zh')
 })

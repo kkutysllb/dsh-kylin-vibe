@@ -9,12 +9,23 @@ export interface SlotRegistration {
   readonly id?: string
   readonly key?: string
   readonly order?: number
-  readonly label?: string
+  /** 活函数：宿主按当前语言求值（语言切换后侧边栏标签即时跟随）。 */
+  readonly label?: string | (() => string)
+  /** 词条命名空间：声明该槽位文本归属，宿主语言切换时重渲染。 */
+  readonly locale?: string
 }
 
 export interface SlotsService {
   inject?(slot: string, factory: () => () => void): void
   register(registration: SlotRegistration, component: unknown): () => void
+}
+
+/** 宿主 locale 服务（`@deepseek-ai/dsh-client-locale` 注入）。register 落词典，
+ * bind 返回活翻译器——引擎语言切换后返回值自动跟随，无需重建面板。
+ */
+export interface LocaleService {
+  register(namespace: string, dictionaries: Record<string, Record<string, string>>): () => void
+  bind(namespace: string): (key: string, params?: Record<string, unknown>) => string
 }
 
 export interface ConnectionService {
@@ -30,6 +41,7 @@ export interface LayoutService {
 export interface ClientContext {
   readonly slots?: SlotsService
   readonly connection?: ConnectionService
+  readonly locale?: LocaleService
   readonly layout?: LayoutService
   /** 注册生命周期清理（client 侧 cordis ctx）。 */
   effect(disposer: () => unknown, label?: string): unknown
