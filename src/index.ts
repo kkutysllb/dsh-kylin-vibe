@@ -53,6 +53,10 @@ export interface GraphRagProvider {
   // cwd 参与解析：caller 工作区命中唯一 KB 的 roots 时自动选中）──
   status(target?: KbRef): Promise<IndexStatus>
   index(target: KbRef, opts: IndexOptions, signal: AbortSignal): Promise<IndexReport>
+  /** 面板触发的后台索引：立即返回（同库互斥），进度经 progress() 轮询。 */
+  indexBackground(target: KbRef, opts: IndexOptions): { readonly started: boolean }
+  progress(kbId: string): import('./core/types.ts').IndexProgress | null
+  cancelIndex(kbId: string): boolean
   query(target: KbRef | undefined, q: QueryInput, cwd?: string): Promise<EvidencePack>
   traverse(target: KbRef | undefined, t: TraverseInput, cwd?: string): Promise<Subgraph>
   forget(target: KbRef | undefined, inner: ForgetTarget, cwd?: string): Promise<ForgetReport>

@@ -273,6 +273,27 @@ export interface KnowledgeBase {
   readonly lastIndexedAt: number | null
 }
 
+// ── 索引进度（0207 §3.2 面板数据源）────────────────────────────────────────
+
+export type IndexPhase = 'scanning' | 'extracting' | 'communities' | 'summarizing' | 'done' | 'error'
+
+export interface IndexProgress {
+  readonly kbId: string
+  readonly kbName: string
+  readonly phase: IndexPhase
+  readonly filesDone: number
+  readonly filesTotal: number
+  readonly currentFile: string | null
+  readonly llmCalls: number
+  readonly tokensIn: number
+  readonly tokensOut: number
+  readonly quarantined: number
+  readonly startedAt: number
+  readonly finishedAt: number | null
+  readonly error: string | null
+  readonly report: IndexReport | null
+}
+
 // ── 治理面 ───────────────────────────────────────────────────────────────────
 
 export interface IndexStatus {

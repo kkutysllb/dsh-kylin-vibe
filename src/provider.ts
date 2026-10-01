@@ -17,8 +17,8 @@ import { diffAgainstIndex, scanRoots } from './core/scanner.ts'
 import { searchGlobal, searchLocal, searchTraversal } from './core/search.ts'
 import {
   GraphRagError,
-  type EvidencePack, type ForgetReport, type ForgetTarget, type KnowledgeBase,
-  type IndexReport, type IndexStatus, type Subgraph,
+  type EvidencePack, type ForgetReport, type ForgetTarget, type IndexProgress,
+  type KnowledgeBase, type IndexReport, type IndexStatus, type Subgraph,
 } from './core/types.ts'
 import type { Context } from '@deepseek-ai/cordis'
 import { GraphRagServiceImpl, type GraphRagProvider, type IndexOptions, type QueryInput, type TraverseInput } from './index.ts'
@@ -250,6 +250,82 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   dispose(): void {
     for (const s of this.stores.values()) s.close()
     this.stores.clear()
+  }
+
+  // ── 后台索引与进度（0207 §3.2 面板数据源）─────────────────────────────
+
+  private readonly progressRecords = new Map<string, IndexProgress>()
+  private readonly controllers = new Map<string, AbortController>()
+
+  /** 面板触发的后台索引：立即返回，进度经 progress() 轮询。同库互斥。 */
+  indexBackground(target: KbRef, opts: IndexOptions): { readonly started: boolean } {
+    const kb = this.resolveKb(target)
+    const running = this.progressRecords.get(kb.id)
+    if (running !== undefined && running.phase !== 'done' && running.phase !== 'error') {
+      return { started: false }
+    }
+    if (kb.roots.length === 0) {
+      throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
+    }
+    const llm = this.completer()
+    if (llm === null) {
+      throw new GraphRagError('NO_PROVIDER', '模型 provider 不可用（宿主未配置 llm 或插件未配置 model）')
+    }
+    const store = this.storeOf(kb)
+    if (opts.retryQuarantined) {
+      for (const s of store.listSources()) {
+        if (s.state === 'quarantined') store.setSourceState(s.id, 'pending')
+      }
+      for (const q of store.quarantineList()) store.quarantineResolve(q.id)
+    }
+    const record: { -readonly [K in keyof IndexProgress]: IndexProgress[K] } = {
+      kbId: kb.id, kbName: kb.name, phase: 'scanning',
+      filesDone: 0, filesTotal: 0, currentFile: null,
+      llmCalls: 0, tokensIn: 0, tokensOut: 0, quarantined: 0,
+      startedAt: Date.now(), finishedAt: null, error: null, report: null,
+    }
+    this.progressRecords.set(kb.id, record)
+    const controller = new AbortController()
+    this.controllers.set(kb.id, controller)
+    const cfg: IngestConfig = {
+      authorizedRoots: [...kb.roots],
+      roots: opts.roots,
+      excludes: this.config.excludes,
+      chunk: this.config.chunk,
+      extract: this.config.extract,
+      community: this.config.community,
+    }
+    void runIngest(store, cfg, { llm, summarize: summarizerOf(llm) }, controller.signal, p => {
+      record.phase = p.phase
+      record.filesDone = p.filesDone
+      record.filesTotal = p.filesTotal
+      record.currentFile = p.currentFile ?? null
+      record.quarantined = p.quarantined
+    }).then(report => {
+      record.phase = 'done'
+      record.report = report
+      record.finishedAt = Date.now()
+      store.setMeta('last-index-at', String(record.finishedAt))
+      this.registry.touchIndexed(kb.id, record.finishedAt)
+    }).catch(err => {
+      record.phase = 'error'
+      record.error = err instanceof Error ? err.message : String(err)
+      record.finishedAt = Date.now()
+    }).finally(() => {
+      this.controllers.delete(kb.id)
+    })
+    return { started: true }
+  }
+
+  progress(kbId: string): IndexProgress | null {
+    return this.progressRecords.get(kbId) ?? null
+  }
+
+  cancelIndex(kbId: string): boolean {
+    const controller = this.controllers.get(kbId)
+    if (controller === undefined) return false
+    controller.abort()
+    return true
   }
 
   // ── 状态（单库 / 总览）────────────────────────────────────────────────────

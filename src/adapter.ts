@@ -124,19 +124,25 @@ export function llmCompleterOf(
 ): LlmCompleter {
   const maxRetries = policy.rateLimitRetries ?? 3
   const baseDelay = policy.baseDelayMs ?? 500
-  const sysTemplate = (system: string): string => system
+  // 服务实例在创建期一次性解析（llmServiceOf 走 reflect.get 非严格读取）；
+  // 调用期不得再触碰 ctx.llm 属性——未 inject 的属性访问在宿主上会抛错
+  // （0.2.0 实测，面板触发索引时暴露）。
+  const llmService = llmServiceOf(ctx)
+  if (llmService === null || llmService === undefined) {
+    throw new GraphRagError('NO_PROVIDER', '宿主 llm 服务不可用')
+  }
 
   return {
     complete: async (system, user, signal) => {
       let lastRateLimitMessage = ''
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (signal?.aborted) throw new GraphRagError('ABORTED', '已中止')
-        const stream = ctx.llm!.stream({
+        const stream = llmService.stream({
           provider: route.provider,
           model: route.model,
           maxTokens: route.maxTokens,
           messages: [
-            { role: 'system', content: [{ type: 'text', text: sysTemplate(system) }] },
+            { role: 'system', content: [{ type: 'text', text: system }] },
             { role: 'user', content: [{ type: 'text', text: user }] },
           ],
           signal,

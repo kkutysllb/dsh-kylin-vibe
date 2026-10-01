@@ -42,10 +42,14 @@ export interface IngestDeps {
   readonly summarize: CommunitySummarizer
 }
 
+export type IngestPhase = 'scanning' | 'extracting' | 'communities' | 'summarizing'
+
 export interface IngestProgress {
+  readonly phase: IngestPhase
   readonly filesDone: number
   readonly filesTotal: number
   readonly currentFile?: string
+  readonly quarantined: number
 }
 
 /** 二进制启发：NUL 字节视为二进制跳过（skipped 计数）。 */
@@ -102,10 +106,11 @@ export async function runIngest(
     .filter(s => ['pending', 'chunked', 'extracting', 'extracted', 'failed'].includes(s.state) && scannedPaths.has(s.path) && !dirtyPaths.has(s.path))
     .map(s => ({ path: s.path, absPath: s.absPath, contentHash: s.contentHash, sizeBytes: s.sizeBytes, mtimeMs: s.mtimeMs }))
   const dirty = [...diff.added, ...diff.changed, ...resume]
+  onProgress?.({ phase: 'scanning', filesDone: 0, filesTotal: dirty.length, quarantined: 0 })
   let done = 0
   for (const f of dirty) {
     if (signal?.aborted) { aborted = true; break }
-    onProgress?.({ filesDone: done, filesTotal: dirty.length, currentFile: f.path })
+    onProgress?.({ phase: 'extracting', filesDone: done, filesTotal: dirty.length, currentFile: f.path, quarantined })
 
     const buf = readFileSync(f.absPath)
     if (isBinary(buf)) {
@@ -171,10 +176,12 @@ export async function runIngest(
   const threshold = cfg.community?.recomputeThreshold ?? 0.05
   const edgeDelta = afterFiles.relations - before.relations + diff.removed.length // 保守估计含删除影响
   if (!aborted && afterFiles.relations > 0 && edgeDelta / Math.max(afterFiles.relations, 1) >= threshold) {
+    onProgress?.({ phase: 'communities', filesDone: dirty.length, filesTotal: dirty.length, quarantined })
     const res = recomputeCommunities(store)
     communitiesRebuilt = res.communities
 
     // ── 阶段 G：指纹漂移的社区重算摘要 ──
+    onProgress?.({ phase: 'summarizing', filesDone: dirty.length, filesTotal: dirty.length, quarantined })
     for (const c of store.listCommunities()) {
       const summary = store.allSummaries().find(s => s.communityId === c.id)
       if (summary && summary.fingerprintAt === c.fingerprint) continue
