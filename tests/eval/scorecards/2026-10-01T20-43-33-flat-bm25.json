@@ -1,0 +1,34 @@
+{
+  "config": "flat-bm25",
+  "suite": "all",
+  "date": "2026-10-01T20-43-33",
+  "gitSha": "e0ffcba",
+  "corpus": {
+    "files": 212,
+    "chunks": 212
+  },
+  "graph": null,
+  "questions": {
+    "local": 15,
+    "global": 10,
+    "traversal": 15
+  },
+  "localEntityHit": 1,
+  "localRelationRecall": 1,
+  "globalCoverage": 0.875,
+  "traversalPrecision": 0.5667,
+  "traversalRecall": 0.2108,
+  "traversalF1": 0.2564,
+  "cost": {
+    "llmCalls": 0,
+    "tokensIn": 0,
+    "tokensOut": 0
+  },
+  "latencyMs": {
+    "p50": 0.23,
+    "p95": 0.46
+  },
+  "buildMs": 29,
+  "baseline": null,
+  "gates": []
+}

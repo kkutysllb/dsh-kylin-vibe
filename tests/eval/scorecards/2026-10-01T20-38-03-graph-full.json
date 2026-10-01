@@ -1,0 +1,58 @@
+{
+  "config": "graph-full",
+  "suite": "all",
+  "date": "2026-10-01T20-38-03",
+  "gitSha": "e0ffcba",
+  "corpus": {
+    "files": 212,
+    "chunks": 212
+  },
+  "graph": {
+    "entities": 302,
+    "relations": 811,
+    "communities": 4
+  },
+  "questions": {
+    "local": 15,
+    "global": 10,
+    "traversal": 15
+  },
+  "localEntityHit": 1,
+  "localRelationRecall": 1,
+  "globalCoverage": 0.88,
+  "traversalPrecision": 0,
+  "traversalRecall": 0,
+  "traversalF1": 0,
+  "cost": {
+    "llmCalls": 0,
+    "tokensIn": 0,
+    "tokensOut": 0
+  },
+  "latencyMs": {
+    "p50": 0.83,
+    "p95": 6.46
+  },
+  "buildMs": 85,
+  "baseline": {
+    "localEntityHit": 1,
+    "globalCoverage": 0.875,
+    "traversalF1": 0.2564
+  },
+  "gates": [
+    {
+      "name": "门槛1：local entityHit ≥ 基线+15%（相对）",
+      "pass": false,
+      "detail": "1.0000 vs 基线 1.0000（需 ≥ 1.1500）"
+    },
+    {
+      "name": "门槛2：global coverage ≥ 基线+20%（相对）",
+      "pass": false,
+      "detail": "0.8800 vs 基线 0.8750（需 ≥ 1.0500）"
+    },
+    {
+      "name": "门槛3：traversal P ≥ 0.80 且 R ≥ 0.70",
+      "pass": false,
+      "detail": "P 0.0000 / R 0.0000"
+    }
+  ]
+}

@@ -1,0 +1,1590 @@
+{
+  "version": 1,
+  "frozen": true,
+  "frozenAt": "2026-10-01",
+  "changelog": "v1 由 spec 派生冻结；修改黄金答案必须新建版本并在 docs/02-design/0206 纪律下记录理由",
+  "counts": {
+    "local": 15,
+    "global": 10,
+    "traversal": 15
+  },
+  "questions": [
+    {
+      "id": "L01",
+      "type": "local",
+      "question": "下单时库存是如何被扣减和回补的？",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "库存服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L02",
+      "type": "local",
+      "question": "订单服务和支付服务的关联机制是什么？",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "支付服务",
+            "PaymentService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "支付服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L03",
+      "type": "local",
+      "question": "说明订单服务与促销服务的依赖关系。",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "促销服务",
+            "PromotionService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "促销服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L04",
+      "type": "local",
+      "question": "交易前风控是怎么接入收单流程的？",
+      "golden": {
+        "entities": [
+          [
+            "支付服务",
+            "PaymentService"
+          ],
+          [
+            "风控服务",
+            "RiskControlService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "支付服务",
+            "r": "uses",
+            "o": "风控服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L05",
+      "type": "local",
+      "question": "搜索结果为什么能过滤掉无货商品？",
+      "golden": {
+        "entities": [
+          [
+            "搜索服务",
+            "SearchService"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "搜索服务",
+            "r": "uses",
+            "o": "库存服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L06",
+      "type": "local",
+      "question": "购物车里展示的优惠是怎么算出来的？",
+      "golden": {
+        "entities": [
+          [
+            "购物车服务",
+            "CartService"
+          ],
+          [
+            "促销服务",
+            "PromotionService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "购物车服务",
+            "r": "uses",
+            "o": "促销服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L07",
+      "type": "local",
+      "question": "说明订单服务与物流服务的依赖关系。",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "物流服务",
+            "LogisticsService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "物流服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L08",
+      "type": "local",
+      "question": "促销服务怎样影响用户服务？",
+      "golden": {
+        "entities": [
+          [
+            "促销服务",
+            "PromotionService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "促销服务",
+            "r": "uses",
+            "o": "用户服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L09",
+      "type": "local",
+      "question": "购物车服务与库存服务之间是如何协作的？",
+      "golden": {
+        "entities": [
+          [
+            "购物车服务",
+            "CartService"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "购物车服务",
+            "r": "uses",
+            "o": "库存服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L10",
+      "type": "local",
+      "question": "订单服务和用户服务的关联机制是什么？",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "用户服务"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L11",
+      "type": "local",
+      "question": "说明订单服务与通知服务的依赖关系。",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "通知服务",
+            "NotificationService"
+          ],
+          [
+            "消息队列",
+            "MessageQueue"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "消息队列"
+          },
+          {
+            "s": "通知服务",
+            "r": "uses",
+            "o": "消息队列"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L12",
+      "type": "local",
+      "question": "支付服务怎样影响通知服务？",
+      "golden": {
+        "entities": [
+          [
+            "支付服务",
+            "PaymentService"
+          ],
+          [
+            "通知服务",
+            "NotificationService"
+          ],
+          [
+            "消息队列",
+            "MessageQueue"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "支付服务",
+            "r": "uses",
+            "o": "消息队列"
+          },
+          {
+            "s": "通知服务",
+            "r": "uses",
+            "o": "消息队列"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L13",
+      "type": "local",
+      "question": "库存服务与通知服务之间是如何协作的？",
+      "golden": {
+        "entities": [
+          [
+            "库存服务",
+            "InventoryService"
+          ],
+          [
+            "通知服务",
+            "NotificationService"
+          ],
+          [
+            "消息队列",
+            "MessageQueue"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "通知服务",
+            "r": "uses",
+            "o": "消息队列"
+          },
+          {
+            "s": "库存服务",
+            "r": "uses",
+            "o": "消息队列"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L14",
+      "type": "local",
+      "question": "订单服务和幂等性的关联机制是什么？",
+      "golden": {
+        "entities": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "幂等性",
+            "Idempotency"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "订单服务",
+            "r": "uses",
+            "o": "幂等性"
+          }
+        ]
+      }
+    },
+    {
+      "id": "L15",
+      "type": "local",
+      "question": "说明库存服务与分布式锁的依赖关系。",
+      "golden": {
+        "entities": [
+          [
+            "库存服务",
+            "InventoryService"
+          ],
+          [
+            "分布式锁",
+            "DistributedLock"
+          ]
+        ],
+        "relations": [
+          {
+            "s": "库存服务",
+            "r": "uses",
+            "o": "分布式锁"
+          }
+        ]
+      }
+    },
+    {
+      "id": "G01",
+      "type": "global",
+      "question": "NovaCommerce 星帆商城由哪些主要模块组成，各自职责是什么？",
+      "golden": {
+        "points": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ],
+          [
+            "支付服务",
+            "PaymentService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ],
+          [
+            "通知服务",
+            "NotificationService"
+          ],
+          [
+            "搜索服务",
+            "SearchService"
+          ],
+          [
+            "购物车服务",
+            "CartService"
+          ],
+          [
+            "促销服务",
+            "PromotionService"
+          ],
+          [
+            "物流服务",
+            "LogisticsService"
+          ],
+          [
+            "风控服务",
+            "RiskControlService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G02",
+      "type": "global",
+      "question": "哪些模块依赖消息队列（EventBridge）做异步协作？",
+      "golden": {
+        "points": [
+          [
+            "order",
+            "OrderService"
+          ],
+          [
+            "payment",
+            "PaymentService"
+          ],
+          [
+            "inventory",
+            "InventoryService"
+          ],
+          [
+            "logistics",
+            "LogisticsService"
+          ],
+          [
+            "notification",
+            "NotificationService"
+          ],
+          [
+            "消息队列",
+            "MessageQueue"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G03",
+      "type": "global",
+      "question": "系统的数据一致性靠哪些机制保障？",
+      "golden": {
+        "points": [
+          [
+            "对账",
+            "Reconciliation"
+          ],
+          [
+            "事件溯源",
+            "EventSourcing"
+          ],
+          [
+            "幂等性",
+            "Idempotency"
+          ],
+          [
+            "分布式锁",
+            "DistributedLock"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G04",
+      "type": "global",
+      "question": "通知服务为哪些模块的事件发送通知？",
+      "golden": {
+        "points": [
+          [
+            "order",
+            "OrderService"
+          ],
+          [
+            "payment",
+            "PaymentService"
+          ],
+          [
+            "inventory",
+            "InventoryService"
+          ],
+          [
+            "logistics",
+            "LogisticsService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G05",
+      "type": "global",
+      "question": "交易链路上的风控是如何接入的？",
+      "golden": {
+        "points": [
+          [
+            "风控服务",
+            "RiskControlService"
+          ],
+          [
+            "支付服务",
+            "PaymentService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ],
+          [
+            "信用档案"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G06",
+      "type": "global",
+      "question": "库存相关的核心机制有哪些？",
+      "golden": {
+        "points": [
+          [
+            "库存服务",
+            "InventoryService"
+          ],
+          [
+            "分布式锁",
+            "DistributedLock"
+          ],
+          [
+            "对账",
+            "Reconciliation"
+          ],
+          [
+            "预占"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G07",
+      "type": "global",
+      "question": "系统对外的统一入口是什么，哪些服务经它暴露？",
+      "golden": {
+        "points": [
+          [
+            "API 网关",
+            "ApiGateway"
+          ],
+          [
+            "order",
+            "OrderService"
+          ],
+          [
+            "payment",
+            "PaymentService"
+          ],
+          [
+            "搜索服务",
+            "SearchService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G08",
+      "type": "global",
+      "question": "促销能力与哪些模块有协作？",
+      "golden": {
+        "points": [
+          [
+            "促销服务",
+            "PromotionService"
+          ],
+          [
+            "购物车服务",
+            "CartService"
+          ],
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G09",
+      "type": "global",
+      "question": "搜索服务的实现依赖什么？",
+      "golden": {
+        "points": [
+          [
+            "搜索服务",
+            "SearchService"
+          ],
+          [
+            "数据库分片",
+            "DatabaseSharding"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "G10",
+      "type": "global",
+      "question": "订单服务的依赖全景是什么？",
+      "golden": {
+        "points": [
+          [
+            "订单服务",
+            "OrderService"
+          ],
+          [
+            "库存服务",
+            "InventoryService"
+          ],
+          [
+            "支付服务",
+            "PaymentService"
+          ],
+          [
+            "促销服务",
+            "PromotionService"
+          ],
+          [
+            "用户服务",
+            "UserService"
+          ],
+          [
+            "物流服务",
+            "LogisticsService"
+          ]
+        ]
+      }
+    },
+    {
+      "id": "T01",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/util/util-01.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/util/util-01.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/core/core-01.ts",
+          "src/core/core-02.ts",
+          "src/core/core-03.ts",
+          "src/core/core-04.ts",
+          "src/core/core-05.ts",
+          "src/core/core-06.ts",
+          "src/core/core-07.ts",
+          "src/core/core-08.ts",
+          "src/core/core-09.ts",
+          "src/core/core-10.ts",
+          "src/core/core-11.ts",
+          "src/core/core-12.ts",
+          "src/core/core-13.ts",
+          "src/core/core-14.ts",
+          "src/core/core-15.ts",
+          "src/db/db-01.ts",
+          "src/db/db-02.ts",
+          "src/db/db-03.ts",
+          "src/db/db-04.ts",
+          "src/db/db-05.ts",
+          "src/db/db-06.ts",
+          "src/db/db-07.ts",
+          "src/db/db-08.ts",
+          "src/db/db-09.ts",
+          "src/db/db-10.ts",
+          "src/db/db-11.ts",
+          "src/db/db-12.ts",
+          "src/db/db-13.ts",
+          "src/db/db-14.ts",
+          "src/db/db-15.ts",
+          "src/http/http-01.ts",
+          "src/http/http-02.ts",
+          "src/http/http-03.ts",
+          "src/http/http-04.ts",
+          "src/http/http-05.ts",
+          "src/http/http-06.ts",
+          "src/http/http-07.ts",
+          "src/http/http-08.ts",
+          "src/http/http-09.ts",
+          "src/http/http-10.ts",
+          "src/http/http-11.ts",
+          "src/http/http-12.ts",
+          "src/http/http-13.ts",
+          "src/http/http-14.ts",
+          "src/http/http-15.ts",
+          "src/jobs/jobs-01.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/log/log-01.ts",
+          "src/log/log-02.ts",
+          "src/log/log-03.ts",
+          "src/log/log-04.ts",
+          "src/log/log-05.ts",
+          "src/log/log-06.ts",
+          "src/log/log-07.ts",
+          "src/log/log-08.ts",
+          "src/log/log-09.ts",
+          "src/log/log-10.ts",
+          "src/log/log-11.ts",
+          "src/log/log-12.ts",
+          "src/log/log-13.ts",
+          "src/log/log-14.ts",
+          "src/log/log-15.ts",
+          "src/models/models-01.ts",
+          "src/models/models-02.ts",
+          "src/models/models-03.ts",
+          "src/models/models-04.ts",
+          "src/models/models-05.ts",
+          "src/models/models-06.ts",
+          "src/models/models-07.ts",
+          "src/models/models-08.ts",
+          "src/models/models-09.ts",
+          "src/models/models-10.ts",
+          "src/models/models-11.ts",
+          "src/models/models-12.ts",
+          "src/models/models-13.ts",
+          "src/models/models-14.ts",
+          "src/models/models-15.ts",
+          "src/queue/queue-01.ts",
+          "src/queue/queue-02.ts",
+          "src/queue/queue-03.ts",
+          "src/queue/queue-04.ts",
+          "src/queue/queue-05.ts",
+          "src/queue/queue-06.ts",
+          "src/queue/queue-07.ts",
+          "src/queue/queue-08.ts",
+          "src/queue/queue-09.ts",
+          "src/queue/queue-10.ts",
+          "src/queue/queue-11.ts",
+          "src/queue/queue-12.ts",
+          "src/queue/queue-13.ts",
+          "src/queue/queue-14.ts",
+          "src/queue/queue-15.ts",
+          "src/search/search-01.ts",
+          "src/search/search-02.ts",
+          "src/search/search-03.ts",
+          "src/search/search-04.ts",
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-10.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-14.ts",
+          "src/search/search-15.ts",
+          "src/util/util-02.ts",
+          "src/util/util-03.ts",
+          "src/util/util-04.ts",
+          "src/util/util-05.ts",
+          "src/util/util-06.ts",
+          "src/util/util-07.ts",
+          "src/util/util-08.ts",
+          "src/util/util-09.ts",
+          "src/util/util-10.ts",
+          "src/util/util-11.ts",
+          "src/util/util-12.ts",
+          "src/util/util-13.ts",
+          "src/util/util-14.ts",
+          "src/util/util-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T02",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/log/log-01.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/log/log-01.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/core/core-01.ts",
+          "src/core/core-02.ts",
+          "src/core/core-03.ts",
+          "src/core/core-04.ts",
+          "src/core/core-05.ts",
+          "src/core/core-06.ts",
+          "src/core/core-07.ts",
+          "src/core/core-08.ts",
+          "src/core/core-09.ts",
+          "src/core/core-10.ts",
+          "src/core/core-11.ts",
+          "src/core/core-12.ts",
+          "src/core/core-13.ts",
+          "src/core/core-14.ts",
+          "src/core/core-15.ts",
+          "src/db/db-01.ts",
+          "src/db/db-02.ts",
+          "src/db/db-03.ts",
+          "src/db/db-04.ts",
+          "src/db/db-05.ts",
+          "src/db/db-06.ts",
+          "src/db/db-07.ts",
+          "src/db/db-08.ts",
+          "src/db/db-09.ts",
+          "src/db/db-10.ts",
+          "src/db/db-11.ts",
+          "src/db/db-12.ts",
+          "src/db/db-13.ts",
+          "src/db/db-14.ts",
+          "src/db/db-15.ts",
+          "src/http/http-01.ts",
+          "src/http/http-02.ts",
+          "src/http/http-03.ts",
+          "src/http/http-04.ts",
+          "src/http/http-05.ts",
+          "src/http/http-06.ts",
+          "src/http/http-07.ts",
+          "src/http/http-08.ts",
+          "src/http/http-09.ts",
+          "src/http/http-10.ts",
+          "src/http/http-11.ts",
+          "src/http/http-12.ts",
+          "src/http/http-13.ts",
+          "src/http/http-14.ts",
+          "src/http/http-15.ts",
+          "src/jobs/jobs-01.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/log/log-02.ts",
+          "src/log/log-03.ts",
+          "src/log/log-04.ts",
+          "src/log/log-05.ts",
+          "src/log/log-06.ts",
+          "src/log/log-07.ts",
+          "src/log/log-08.ts",
+          "src/log/log-09.ts",
+          "src/log/log-10.ts",
+          "src/log/log-11.ts",
+          "src/log/log-12.ts",
+          "src/log/log-13.ts",
+          "src/log/log-14.ts",
+          "src/log/log-15.ts",
+          "src/models/models-01.ts",
+          "src/models/models-02.ts",
+          "src/models/models-03.ts",
+          "src/models/models-04.ts",
+          "src/models/models-05.ts",
+          "src/models/models-06.ts",
+          "src/models/models-07.ts",
+          "src/models/models-08.ts",
+          "src/models/models-09.ts",
+          "src/models/models-10.ts",
+          "src/models/models-11.ts",
+          "src/models/models-12.ts",
+          "src/models/models-13.ts",
+          "src/models/models-14.ts",
+          "src/models/models-15.ts",
+          "src/queue/queue-01.ts",
+          "src/queue/queue-02.ts",
+          "src/queue/queue-03.ts",
+          "src/queue/queue-04.ts",
+          "src/queue/queue-05.ts",
+          "src/queue/queue-06.ts",
+          "src/queue/queue-07.ts",
+          "src/queue/queue-08.ts",
+          "src/queue/queue-09.ts",
+          "src/queue/queue-10.ts",
+          "src/queue/queue-11.ts",
+          "src/queue/queue-12.ts",
+          "src/queue/queue-13.ts",
+          "src/queue/queue-14.ts",
+          "src/queue/queue-15.ts",
+          "src/search/search-01.ts",
+          "src/search/search-02.ts",
+          "src/search/search-03.ts",
+          "src/search/search-04.ts",
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-10.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-14.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T03",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/core/core-01.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/core/core-01.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/core/core-02.ts",
+          "src/core/core-03.ts",
+          "src/core/core-04.ts",
+          "src/core/core-05.ts",
+          "src/core/core-06.ts",
+          "src/core/core-07.ts",
+          "src/core/core-08.ts",
+          "src/core/core-09.ts",
+          "src/core/core-10.ts",
+          "src/core/core-11.ts",
+          "src/core/core-12.ts",
+          "src/core/core-13.ts",
+          "src/core/core-14.ts",
+          "src/core/core-15.ts",
+          "src/db/db-01.ts",
+          "src/db/db-02.ts",
+          "src/db/db-03.ts",
+          "src/db/db-04.ts",
+          "src/db/db-05.ts",
+          "src/db/db-06.ts",
+          "src/db/db-07.ts",
+          "src/db/db-08.ts",
+          "src/db/db-09.ts",
+          "src/db/db-10.ts",
+          "src/db/db-11.ts",
+          "src/db/db-12.ts",
+          "src/db/db-13.ts",
+          "src/db/db-14.ts",
+          "src/db/db-15.ts",
+          "src/http/http-01.ts",
+          "src/http/http-02.ts",
+          "src/http/http-03.ts",
+          "src/http/http-04.ts",
+          "src/http/http-05.ts",
+          "src/http/http-06.ts",
+          "src/http/http-07.ts",
+          "src/http/http-08.ts",
+          "src/http/http-09.ts",
+          "src/http/http-10.ts",
+          "src/http/http-11.ts",
+          "src/http/http-12.ts",
+          "src/http/http-13.ts",
+          "src/http/http-14.ts",
+          "src/http/http-15.ts",
+          "src/jobs/jobs-01.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/models/models-01.ts",
+          "src/models/models-02.ts",
+          "src/models/models-03.ts",
+          "src/models/models-04.ts",
+          "src/models/models-05.ts",
+          "src/models/models-06.ts",
+          "src/models/models-07.ts",
+          "src/models/models-08.ts",
+          "src/models/models-09.ts",
+          "src/models/models-10.ts",
+          "src/models/models-11.ts",
+          "src/models/models-12.ts",
+          "src/models/models-13.ts",
+          "src/models/models-14.ts",
+          "src/models/models-15.ts",
+          "src/queue/queue-01.ts",
+          "src/queue/queue-02.ts",
+          "src/queue/queue-03.ts",
+          "src/queue/queue-04.ts",
+          "src/queue/queue-05.ts",
+          "src/queue/queue-06.ts",
+          "src/queue/queue-07.ts",
+          "src/queue/queue-08.ts",
+          "src/queue/queue-09.ts",
+          "src/queue/queue-10.ts",
+          "src/queue/queue-11.ts",
+          "src/queue/queue-12.ts",
+          "src/queue/queue-13.ts",
+          "src/queue/queue-14.ts",
+          "src/queue/queue-15.ts",
+          "src/search/search-01.ts",
+          "src/search/search-02.ts",
+          "src/search/search-03.ts",
+          "src/search/search-04.ts",
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-10.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-14.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T04",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/util/util-13.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/util/util-13.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/core/core-04.ts",
+          "src/core/core-05.ts",
+          "src/core/core-06.ts",
+          "src/core/core-07.ts",
+          "src/core/core-08.ts",
+          "src/core/core-09.ts",
+          "src/core/core-10.ts",
+          "src/core/core-11.ts",
+          "src/core/core-12.ts",
+          "src/core/core-13.ts",
+          "src/core/core-14.ts",
+          "src/core/core-15.ts",
+          "src/db/db-01.ts",
+          "src/db/db-02.ts",
+          "src/db/db-03.ts",
+          "src/db/db-04.ts",
+          "src/db/db-05.ts",
+          "src/db/db-06.ts",
+          "src/db/db-07.ts",
+          "src/db/db-08.ts",
+          "src/db/db-09.ts",
+          "src/db/db-10.ts",
+          "src/db/db-11.ts",
+          "src/db/db-12.ts",
+          "src/db/db-13.ts",
+          "src/db/db-14.ts",
+          "src/db/db-15.ts",
+          "src/http/http-01.ts",
+          "src/http/http-02.ts",
+          "src/http/http-03.ts",
+          "src/http/http-04.ts",
+          "src/http/http-05.ts",
+          "src/http/http-06.ts",
+          "src/http/http-07.ts",
+          "src/http/http-08.ts",
+          "src/http/http-09.ts",
+          "src/http/http-10.ts",
+          "src/http/http-11.ts",
+          "src/http/http-12.ts",
+          "src/http/http-13.ts",
+          "src/http/http-14.ts",
+          "src/http/http-15.ts",
+          "src/jobs/jobs-01.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/log/log-09.ts",
+          "src/log/log-15.ts",
+          "src/models/models-01.ts",
+          "src/models/models-02.ts",
+          "src/models/models-03.ts",
+          "src/models/models-04.ts",
+          "src/models/models-05.ts",
+          "src/models/models-06.ts",
+          "src/models/models-07.ts",
+          "src/models/models-08.ts",
+          "src/models/models-09.ts",
+          "src/models/models-10.ts",
+          "src/models/models-11.ts",
+          "src/models/models-12.ts",
+          "src/models/models-13.ts",
+          "src/models/models-14.ts",
+          "src/models/models-15.ts",
+          "src/queue/queue-01.ts",
+          "src/queue/queue-02.ts",
+          "src/queue/queue-03.ts",
+          "src/queue/queue-04.ts",
+          "src/queue/queue-05.ts",
+          "src/queue/queue-06.ts",
+          "src/queue/queue-07.ts",
+          "src/queue/queue-08.ts",
+          "src/queue/queue-09.ts",
+          "src/queue/queue-10.ts",
+          "src/queue/queue-11.ts",
+          "src/queue/queue-12.ts",
+          "src/queue/queue-13.ts",
+          "src/queue/queue-14.ts",
+          "src/queue/queue-15.ts",
+          "src/search/search-01.ts",
+          "src/search/search-02.ts",
+          "src/search/search-03.ts",
+          "src/search/search-04.ts",
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-10.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-14.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T05",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/db/db-13.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/db/db-13.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T06",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/models/models-04.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/models/models-04.ts",
+        "goldenFiles": [
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/models/models-06.ts",
+          "src/models/models-08.ts",
+          "src/models/models-09.ts",
+          "src/models/models-11.ts",
+          "src/models/models-12.ts",
+          "src/models/models-13.ts",
+          "src/models/models-14.ts",
+          "src/models/models-15.ts",
+          "src/search/search-01.ts",
+          "src/search/search-02.ts",
+          "src/search/search-03.ts",
+          "src/search/search-04.ts",
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-10.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-14.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T07",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/queue/queue-04.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/queue/queue-04.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/jobs/jobs-01.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts",
+          "src/queue/queue-05.ts",
+          "src/queue/queue-06.ts",
+          "src/queue/queue-07.ts",
+          "src/queue/queue-08.ts",
+          "src/queue/queue-11.ts",
+          "src/queue/queue-13.ts",
+          "src/queue/queue-14.ts"
+        ]
+      }
+    },
+    {
+      "id": "T08",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/http/http-01.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/http/http-01.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/http/http-02.ts",
+          "src/http/http-03.ts",
+          "src/http/http-04.ts",
+          "src/http/http-05.ts",
+          "src/http/http-06.ts",
+          "src/http/http-07.ts",
+          "src/http/http-08.ts",
+          "src/http/http-09.ts",
+          "src/http/http-10.ts",
+          "src/http/http-11.ts",
+          "src/http/http-12.ts",
+          "src/http/http-13.ts",
+          "src/http/http-14.ts",
+          "src/http/http-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T09",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/jobs/jobs-01.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/jobs/jobs-01.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T10",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/queue/queue-14.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/queue/queue-14.ts",
+        "goldenFiles": [
+          "src/auth/auth-01.ts",
+          "src/auth/auth-02.ts",
+          "src/auth/auth-03.ts",
+          "src/auth/auth-04.ts",
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-07.ts",
+          "src/auth/auth-08.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts",
+          "src/jobs/jobs-02.ts",
+          "src/jobs/jobs-03.ts",
+          "src/jobs/jobs-04.ts",
+          "src/jobs/jobs-05.ts",
+          "src/jobs/jobs-06.ts",
+          "src/jobs/jobs-07.ts",
+          "src/jobs/jobs-08.ts",
+          "src/jobs/jobs-09.ts",
+          "src/jobs/jobs-10.ts",
+          "src/jobs/jobs-11.ts",
+          "src/jobs/jobs-12.ts",
+          "src/jobs/jobs-13.ts",
+          "src/jobs/jobs-14.ts",
+          "src/jobs/jobs-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T11",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/auth/auth-03.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/auth/auth-03.ts",
+        "goldenFiles": [
+          "src/auth/auth-05.ts",
+          "src/auth/auth-06.ts",
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-11.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-14.ts",
+          "src/auth/auth-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T12",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/search/search-03.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/search/search-03.ts",
+        "goldenFiles": [
+          "src/search/search-05.ts",
+          "src/search/search-06.ts",
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T13",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/search/search-06.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/search/search-06.ts",
+        "goldenFiles": [
+          "src/search/search-07.ts",
+          "src/search/search-08.ts",
+          "src/search/search-09.ts",
+          "src/search/search-11.ts",
+          "src/search/search-12.ts",
+          "src/search/search-13.ts",
+          "src/search/search-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T14",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/http/http-10.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/http/http-10.ts",
+        "goldenFiles": [
+          "src/auth/auth-09.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/auth/auth-15.ts",
+          "src/http/http-15.ts"
+        ]
+      }
+    },
+    {
+      "id": "T15",
+      "type": "traversal",
+      "question": "在 atlas 项目中，如果修改 src/models/models-15.ts 这个文件，会影响哪些文件？（列出受影响的文件路径）",
+      "golden": {
+        "seedFile": "src/models/models-15.ts",
+        "goldenFiles": [
+          "src/auth/auth-06.ts",
+          "src/auth/auth-10.ts",
+          "src/auth/auth-12.ts",
+          "src/auth/auth-13.ts",
+          "src/search/search-09.ts",
+          "src/search/search-13.ts"
+        ]
+      }
+    }
+  ]
+}

@@ -1,0 +1,368 @@
+{
+  "version": 1,
+  "modules": [
+    {
+      "id": "order",
+      "zh": "订单服务",
+      "en": "OrderService",
+      "duty": "管理订单生命周期与状态流转，是交易链路的编排中枢",
+      "topics": [
+        "订单状态机",
+        "超时与自动取消",
+        "幂等提交",
+        "订单拆单",
+        "逆向流程"
+      ]
+    },
+    {
+      "id": "inventory",
+      "zh": "库存服务",
+      "en": "InventoryService",
+      "duty": "负责库存扣减、回补、对账与补货",
+      "topics": [
+        "库存扣减",
+        "防超卖",
+        "库存对账",
+        "补货",
+        "库存快照"
+      ]
+    },
+    {
+      "id": "payment",
+      "zh": "支付服务",
+      "en": "PaymentService",
+      "duty": "对接支付渠道，管理资金流水与退款",
+      "topics": [
+        "渠道适配",
+        "支付回调",
+        "资金对账",
+        "风控接入",
+        "退款"
+      ]
+    },
+    {
+      "id": "user",
+      "zh": "用户服务",
+      "en": "UserService",
+      "duty": "管理账户、会员等级与实名信息",
+      "topics": [
+        "账户体系",
+        "会员等级",
+        "实名认证",
+        "人群圈选",
+        "隐私与合规"
+      ]
+    },
+    {
+      "id": "notification",
+      "zh": "通知服务",
+      "en": "NotificationService",
+      "duty": "统一收口站内信、短信与推送的投递",
+      "topics": [
+        "通道管理",
+        "模板管理",
+        "投递可靠性",
+        "订阅偏好"
+      ]
+    },
+    {
+      "id": "search",
+      "zh": "搜索服务",
+      "en": "SearchService",
+      "duty": "提供商品检索、筛选与排序",
+      "topics": [
+        "索引构建",
+        "索引分片",
+        "查询语法",
+        "无货过滤"
+      ]
+    },
+    {
+      "id": "cart",
+      "zh": "购物车服务",
+      "en": "CartService",
+      "duty": "管理加购、合并与结算前校验",
+      "topics": [
+        "合并策略",
+        "结算前快照",
+        "优惠试算",
+        "失效清理"
+      ]
+    },
+    {
+      "id": "promotion",
+      "zh": "促销服务",
+      "en": "PromotionService",
+      "duty": "管理券、满减与活动规则",
+      "topics": [
+        "券体系",
+        "满减规则",
+        "活动管理",
+        "预算控制"
+      ]
+    },
+    {
+      "id": "logistics",
+      "zh": "物流服务",
+      "en": "LogisticsService",
+      "duty": "管理发货单、轨迹与签收",
+      "topics": [
+        "发货单",
+        "轨迹订阅",
+        "签收确认",
+        "逆向物流"
+      ]
+    },
+    {
+      "id": "risk",
+      "zh": "风控服务",
+      "en": "RiskControlService",
+      "duty": "交易风险评估、拦截与信用档案",
+      "topics": [
+        "规则引擎",
+        "信用档案",
+        "实时拦截",
+        "灰名单",
+        "案例回溯"
+      ]
+    }
+  ],
+  "concepts": [
+    {
+      "id": "mq",
+      "zh": "消息队列",
+      "en": "MessageQueue",
+      "desc": "异步事件骨干，别称 EventBridge"
+    },
+    {
+      "id": "gateway",
+      "zh": "API 网关",
+      "en": "ApiGateway",
+      "desc": "统一入口，负责路由、限流与审计"
+    },
+    {
+      "id": "esourcing",
+      "zh": "事件溯源",
+      "en": "EventSourcing",
+      "desc": "以不可变事件流记录状态变更"
+    },
+    {
+      "id": "dlock",
+      "zh": "分布式锁",
+      "en": "DistributedLock",
+      "desc": "跨进程互斥，防并发超卖/超发"
+    },
+    {
+      "id": "idem",
+      "zh": "幂等性",
+      "en": "Idempotency",
+      "desc": "重复请求返回首次结果"
+    },
+    {
+      "id": "recon",
+      "zh": "对账",
+      "en": "Reconciliation",
+      "desc": "跨系统账实核对与差异处理"
+    },
+    {
+      "id": "sharding",
+      "zh": "数据库分片",
+      "en": "DatabaseSharding",
+      "desc": "按维度水平拆分存储"
+    },
+    {
+      "id": "registry",
+      "zh": "服务注册",
+      "en": "ServiceRegistry",
+      "desc": "服务发现与健康的注册中心"
+    }
+  ],
+  "relations": [
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "inventory",
+      "desc": "下单扣减/关闭回补库存"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "payment",
+      "desc": "发起收单与退款"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "promotion",
+      "desc": "计算优惠并核销"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "user",
+      "desc": "校验账户与收货人"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "logistics",
+      "desc": "拆单驱动发货"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "mq",
+      "desc": "发布订单事件"
+    },
+    {
+      "s": "payment",
+      "r": "uses",
+      "o": "risk",
+      "desc": "收单前风控评估"
+    },
+    {
+      "s": "payment",
+      "r": "uses",
+      "o": "mq",
+      "desc": "发布支付事件"
+    },
+    {
+      "s": "notification",
+      "r": "uses",
+      "o": "mq",
+      "desc": "消费事件驱动投递"
+    },
+    {
+      "s": "inventory",
+      "r": "uses",
+      "o": "mq",
+      "desc": "发布库存变更事件"
+    },
+    {
+      "s": "logistics",
+      "r": "uses",
+      "o": "mq",
+      "desc": "发布轨迹事件"
+    },
+    {
+      "s": "inventory",
+      "r": "uses",
+      "o": "dlock",
+      "desc": "热点 SKU 扣减串行化"
+    },
+    {
+      "s": "promotion",
+      "r": "uses",
+      "o": "dlock",
+      "desc": "预算扣减防超发"
+    },
+    {
+      "s": "inventory",
+      "r": "uses",
+      "o": "recon",
+      "desc": "库存账实核对"
+    },
+    {
+      "s": "payment",
+      "r": "uses",
+      "o": "recon",
+      "desc": "资金账实核对"
+    },
+    {
+      "s": "promotion",
+      "r": "uses",
+      "o": "recon",
+      "desc": "预算核销对账"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "esourcing",
+      "desc": "状态机事件流"
+    },
+    {
+      "s": "risk",
+      "r": "uses",
+      "o": "esourcing",
+      "desc": "案例回溯事件流"
+    },
+    {
+      "s": "order",
+      "r": "uses",
+      "o": "idem",
+      "desc": "创建/跃迁幂等键"
+    },
+    {
+      "s": "payment",
+      "r": "uses",
+      "o": "idem",
+      "desc": "回调幂等"
+    },
+    {
+      "s": "search",
+      "r": "uses",
+      "o": "sharding",
+      "desc": "索引按类目分片"
+    },
+    {
+      "s": "search",
+      "r": "uses",
+      "o": "inventory",
+      "desc": "可售位依赖库存事件"
+    },
+    {
+      "s": "cart",
+      "r": "uses",
+      "o": "inventory",
+      "desc": "结算前库存快照"
+    },
+    {
+      "s": "cart",
+      "r": "uses",
+      "o": "promotion",
+      "desc": "优惠试算"
+    },
+    {
+      "s": "promotion",
+      "r": "uses",
+      "o": "user",
+      "desc": "人群圈选定向"
+    },
+    {
+      "s": "risk",
+      "r": "uses",
+      "o": "user",
+      "desc": "信用档案输入"
+    },
+    {
+      "s": "gateway",
+      "r": "relates_to",
+      "o": "order",
+      "desc": "入口路由"
+    },
+    {
+      "s": "gateway",
+      "r": "relates_to",
+      "o": "payment",
+      "desc": "入口路由"
+    },
+    {
+      "s": "gateway",
+      "r": "relates_to",
+      "o": "search",
+      "desc": "入口路由"
+    },
+    {
+      "s": "registry",
+      "r": "relates_to",
+      "o": "order",
+      "desc": "服务发现"
+    },
+    {
+      "s": "registry",
+      "r": "relates_to",
+      "o": "payment",
+      "desc": "服务发现"
+    }
+  ]
+}
