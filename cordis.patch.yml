@@ -1,0 +1,18 @@
+# 三角色注册（docs/02-design/0205 §3）：seam / provider / consumer 只依赖 seam。
+# 替换外部引擎 = 换 provider 一行；只关工具面 = disable graphrag-tools 一行。
+- insert:
+    - id: graphrag-seam
+      name: 'dsh-kylin-vibe'
+    - id: graphrag-provider-local
+      name: 'dsh-kylin-vibe/provider'
+      config:
+        roots: []            # 授权索引根（显式授权，ADR-9）；示例 ['/abs/path/repo']
+        # excludes: ['.git', '.env*', '*secret*']
+        # model: { provider: null, model: null }   # 缺省跟随宿主当前选择（需两者都配置才生效）
+        # extract: { minConfidence: 0.6, repairRetries: 1 }
+        # community: { recomputeThreshold: 0.05 }
+        # dataDir: '/abs/path'                     # 缺省 $DSH_HOME/graphrag → ~/.dsh/graphrag
+    - id: graphrag-tools
+      name: 'dsh-kylin-vibe/tool'
+    # M3: - id: graphrag-config
+    #      name: 'dsh-kylin-vibe/config'
