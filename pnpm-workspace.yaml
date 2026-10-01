@@ -1,0 +1,9 @@
+# 本地插件包（单包，非 monorepo）。pnpm 11 的包管理设置：
+# - autoInstallPeers=false：宿主 peer 包（部分未发布到 registry）由宿主
+#   运行时注入，本地开发/测试用 tests/register-dsh-stubs.mjs 桩替代；
+# - esbuild（tsx 的传递依赖）需要构建脚本安装平台二进制；
+# - 跳过 run 前依赖状态校验（对齐 dsh-kylin-automation）。
+autoInstallPeers: false
+allowBuilds:
+  esbuild: true
+verifyDepsBeforeRun: false

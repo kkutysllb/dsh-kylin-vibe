@@ -1,0 +1,71 @@
+{
+  "name": "dsh-kylin-vibe",
+  "version": "0.1.0",
+  "description": "DSH/QiLin 双引擎 GraphRAG 插件：把显式授权的本地语料增量索引成知识图谱（实体-关系-社区），以 agent 工具形式暴露，供模型在任务执行中做关系性/全局性推理检索",
+  "license": "MIT",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./provider": "./lib/provider.js",
+    "./tool": "./lib/tool.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "release"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "qilin": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --import ./tests/register-dsh-stubs.mjs --import tsx --test 'tests/**/*.test.ts'",
+    "eval": "tsx tests/eval/run.ts",
+    "check": "npm run typecheck && npm run test && npm run build && npm run smoke",
+    "fixtures:gen": "tsx scripts/gen-fixtures.ts",
+    "build": "node scripts/build.mjs",
+    "smoke": "node scripts/smoke-plugin.mjs"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "*",
+    "@deepseek-ai/dsh-llm": "*",
+    "@deepseek-ai/dsh-system-prompt": "*",
+    "@deepseek-ai/dsh-tools": "*"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "esbuild": "^0.28.2",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0"
+  },
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "qilin",
+    "graphrag",
+    "knowledge-graph",
+    "cordis",
+    "kylin"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kkutysllb/dsh-kylin-vibe.git"
+  }
+}
