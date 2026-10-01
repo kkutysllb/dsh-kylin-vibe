@@ -9,7 +9,9 @@
     ".": "./lib/index.js",
     "./provider": "./lib/provider.js",
     "./tool": "./lib/tool.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./lib/client.js",
+    "./rpc": "./lib/rpc.js"
   },
   "files": [
     "lib",
@@ -24,11 +26,25 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-connection"
+      ]
     }
   },
   "qilin": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-connection"
+      ]
     }
   },
   "scripts": {
@@ -51,7 +67,11 @@
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
     "esbuild": "^0.28.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   },

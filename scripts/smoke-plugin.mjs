@@ -4,6 +4,8 @@
  * 任何 @deepseek-ai/* 运行时导入缺失都会在此暴露（零运行时导入纪律）。
  */
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -66,7 +68,8 @@ assert.ok(boot.ctx.graphrag, 'seam 应挂载 ctx.graphrag')
 
 // ── 2. provider ──────────────────────────────────────────────────────────────
 
-await providerMod.apply(boot.ctx, { dataDir: '/tmp/graphrag-smoke-m3' })
+const smokeDir = mkdtempSync(join(tmpdir(), 'graphrag-smoke-'))
+await providerMod.apply(boot.ctx, { dataDir: smokeDir })
 const provider = boot.ctx.graphrag.resolve()
 assert.equal(provider.id, 'local-sqlite', 'provider 应注册进 seam')
 assert.equal(typeof provider.estimate, 'function', 'estimate 契约应在')
@@ -99,6 +102,7 @@ const overview = await provider.status()
 assert.ok(overview.kbsOverview.some(k => k.name === '冒烟库'), 'status 总览应包含 KB')
 assert.equal(overview.kbName, null)
 console.log('smoke-plugin: ALL CHECKS PASSED')
+process.on('exit', () => { try { rmSync(smokeDir, { recursive: true, force: true }) } catch { /* best effort */ } })
 console.log(`  tools: ${['graphrag_query', 'graphrag_graph', 'graphrag_status', 'graphrag_index', 'graphrag_forget'].join(', ')}`)
 console.log('  announcement: 1 section (order 210)')
 process.exit(0)

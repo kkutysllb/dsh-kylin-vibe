@@ -28,6 +28,7 @@ const entries = [
   { in: join(root, 'src/index.ts'), out: join(outdir, 'index') },
   { in: join(root, 'src/provider.ts'), out: join(outdir, 'provider') },
   { in: join(root, 'src/tool.ts'), out: join(outdir, 'tool') },
+  { in: join(root, 'src/rpc.ts'), out: join(outdir, 'rpc') },
 ]
 
 for (const entry of entries) {
@@ -37,3 +38,25 @@ for (const entry of entries) {
 
 // 补充产物：cordis.patch.yml 已在 files 列表；无需复制
 console.log('build done')
+
+// ── web client bundle（0207 §3：client 模块表契约）──────────────────────────
+const PACKAGE_ID = 'dsh-kylin-vibe'
+await build({
+  entryPoints: ['src/client/index.tsx'],
+  bundle: true,
+  format: 'cjs',
+  platform: 'browser',
+  target: 'es2022',
+  outfile: 'lib/client.js',
+  sourcemap: true,
+  external: ['react', 'react-dom', 'react/jsx-runtime'],
+  define: { 'process.env.NODE_ENV': '"production"' },
+  banner: {
+    js: [
+      `window.__ModuleLoader__.load({ id: ${JSON.stringify(PACKAGE_ID)}, factory: (require) => {`,
+      'var module = { exports: {} }; var exports = module.exports;',
+    ].join('\n'),
+  },
+  footer: { js: 'return module.exports; } });' },
+})
+console.log('built lib/client.js')
