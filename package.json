@@ -54,9 +54,17 @@
     "test": "node --import ./tests/register-dsh-stubs.mjs --import tsx --test 'tests/**/*.test.ts'",
     "eval": "tsx tests/eval/run.ts",
     "check": "npm run typecheck && npm run test && npm run build && npm run smoke",
+    "prepack": "npm run check",
     "fixtures:gen": "tsx scripts/gen-fixtures.ts",
     "build": "node scripts/build.mjs",
-    "smoke": "node scripts/smoke-plugin.mjs"
+    "smoke": "node scripts/smoke-plugin.mjs",
+    "preindex": "tsx scripts/smoke-preindex.ts",
+    "release:notes": "node scripts/create-github-releases.mjs",
+    "sync:mirror": "node scripts/sync-to-dsh-plugins.mjs",
+    "sync:check": "node scripts/sync-to-dsh-plugins.mjs --check"
+  },
+  "publishConfig": {
+    "access": "public"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "*",
