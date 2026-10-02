@@ -40,6 +40,8 @@ const CSS = `
 .gv-roots { color: var(--gv-fg-muted); font-size: 12px; word-break: break-all; margin: 4px 0; }
 .gv-stats { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; color: var(--gv-fg-muted); font-size: 12px; }
 .gv-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
+.gv-actions + .gv-actions { margin-top: 10px; }
+.gv-actions { row-gap: 6px; }
 .gv-btn { border: 1px solid var(--gv-border); background: transparent; color: var(--gv-fg); border-radius: 8px; padding: 4px 12px; cursor: pointer; font-size: 12px; }
 .gv-btn:hover { background: var(--gv-fill); }
 .gv-btn:disabled { opacity: .45; cursor: not-allowed; }
