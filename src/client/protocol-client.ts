@@ -59,6 +59,54 @@ export interface UiWorkspaceService {
   openWorkspace?(target: string): unknown
 }
 
+/** 工作区服务面（`@deepseek-ai/dsh-api-workspace-controller` 注入；软探测）。 */
+export interface WorkspacesService {
+  readonly list?: {
+    getSnapshot?(): {
+      readonly items?: ReadonlyArray<{
+        readonly workspaceId: string
+        readonly path?: string
+        readonly title?: string
+        readonly sessionIds?: readonly string[]
+      }>
+    }
+  }
+}
+
+/** 远端命名空间面（`@deepseek-ai/dsh-api-remotes` + 'remote.session' 注入；
+ * fail-closed——按名注入后才可读）。模型目录来自这里（automation 同款）。
+ */
+export interface RemoteService {
+  readonly session?: {
+    modelCatalog?(): Promise<{ ok?: unknown; value?: unknown; error?: { code?: unknown; message?: unknown } }>
+  }
+}
+
+/** 会话级模型选择（provider/model/可选推理档）。 */
+export interface ModelSelection {
+  readonly provider: string
+  readonly model: string
+  readonly reasoningEffort?: string
+}
+
+/** 单会话模型目录面（`@deepseek-ai/dsh-client-ui-model-selection` 注入的
+ * `modelDirectories` 服务 → directoryFor(sessionId)；select 走 durable 投影，
+ * 面板/输入框选择器同源）。 */
+export interface ModelDirectoryFace {
+  readonly store?: {
+    getSnapshot?(): {
+      readonly current?: ModelSelection | null
+      readonly groups?: readonly unknown[]
+      readonly status?: string
+    }
+  }
+  select?(selection: ModelSelection): Promise<unknown>
+}
+
+export interface ModelDirectoriesService {
+  directoryFor?(sessionId: string): ModelDirectoryFace
+}
+
 export interface ConnectionService {
   rpc?: {
     call(channel: string, endpoint: string, payload: unknown): Promise<unknown>
@@ -75,6 +123,9 @@ export interface ClientContext {
   readonly locale?: LocaleService
   readonly sessions?: SessionsService
   readonly uiWorkspace?: UiWorkspaceService
+  readonly workspaces?: WorkspacesService
+  readonly remote?: RemoteService
+  readonly modelDirectories?: ModelDirectoriesService
   readonly layout?: LayoutService
   /** 注册生命周期清理（client 侧 cordis ctx）。 */
   effect(disposer: () => unknown, label?: string): unknown

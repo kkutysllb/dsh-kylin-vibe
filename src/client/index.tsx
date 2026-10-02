@@ -18,10 +18,21 @@ import { KbManagerView } from './view.tsx'
 export const name = 'dsh-kylin-vibe'
 
 /** 客户端服务注入面（外壳按此名单注入；缺省会激活失败——0.2.0 实测）。
- * sessions/uiWorkspace/layout 为软探测：缺席时目录选择与 agent 代建降级
- * （手输路径 + 剪贴板），面板主体不受影响。
+ * sessions/uiWorkspace/workspaces/remote/modelDirectories/layout 为软探测：
+ * 缺席时目录选择、代建落点工作区、模型选择等能力逐级降级，面板主体不受影响。
  */
-export const inject = ['slots', 'connection', 'locale', 'sessions', 'uiWorkspace', 'layout'] as const
+export const inject = [
+  'slots',
+  'connection',
+  'locale',
+  'sessions',
+  'uiWorkspace',
+  'workspaces',
+  'remote',
+  'remote.session',
+  'modelDirectories',
+  'layout',
+] as const
 
 /** 面板 id：侧边栏入口与主面板共用。 */
 const PANEL_ID = 'ky-graphrag'
@@ -70,7 +81,14 @@ export function apply(ctx: ClientContext): void {
       },
     },
   })
-  const bridge = createHostBridge(ctx)
+  const bridge = createHostBridge({
+    sessions: ctx.sessions,
+    uiWorkspace: ctx.uiWorkspace,
+    workspaces: ctx.workspaces,
+    remote: ctx.remote,
+    modelDirectories: ctx.modelDirectories,
+    layout: ctx.layout,
+  })
 
   if (ctx.slots?.inject !== undefined) {
     try {

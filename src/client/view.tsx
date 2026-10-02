@@ -6,7 +6,7 @@
 import { useEffect, useSyncExternalStore, useState } from 'react'
 import { BrowseReviewView } from './browse-review.tsx'
 
-import type { HostBridge } from './bridge.ts'
+import type { HostBridge, ModelCatalogEntry } from './bridge.ts'
 import type { KbView } from './protocol.ts'
 import { sortKbs, type KbRuntime, type Translate } from './runtime.ts'
 
@@ -75,6 +75,16 @@ function CreateForm(props: {
   const [rootsText, setRootsText] = useState('')
   const [description, setDescription] = useState('')
   const [picking, setPicking] = useState(false)
+  // 代建落点：工作区 + 会话模型（'' = 跟随当前/默认）
+  const [workspaceId, setWorkspaceId] = useState('')
+  const [modelKey, setModelKey] = useState('')
+  const [workspaces, setWorkspaces] = useState<Array<{ id: string; title: string }>>([])
+  const [catalog, setCatalog] = useState<ModelCatalogEntry[]>([])
+
+  useEffect(() => {
+    setWorkspaces(bridge.listWorkspaces())
+    void bridge.loadModelCatalog().then(setCatalog)
+  }, [bridge])
 
   const rootsOf = (): string[] => rootsText.split('\n').map(line => line.trim()).filter(line => line !== '')
 
@@ -101,7 +111,11 @@ function CreateForm(props: {
     const roots = rootsOf()
     if (roots.length === 0) { runtime.pushNotice(t('delegateRootsRequired')); return }
     const prompt = t('agentCreatePrompt', { name: name.trim() !== '' ? name.trim() : roots[0], roots: roots.map(r => `- ${r}`).join('\n') })
-    void bridge.delegate(prompt).then(result => {
+    const chosen = catalog.find(entry => `${entry.provider}|${entry.model}` === modelKey)
+    void bridge.delegate(prompt, {
+      workspaceId: workspaceId !== '' ? workspaceId : undefined,
+      model: chosen !== undefined ? { provider: chosen.provider, model: chosen.model } : undefined,
+    }).then(result => {
       runtime.pushNotice(t(`delegate${result.charAt(0).toUpperCase()}${result.slice(1)}`))
       if (result !== 'none') onDone()
     })
@@ -111,6 +125,28 @@ function CreateForm(props: {
     <div className='gv-form'>
       <label>{t('formName')}</label>
       <input value={name} onChange={e => setName(e.target.value)} placeholder={t('formNameHint')} />
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 220px' }}>
+          <label>{t('formWorkspace')}</label>
+          <select className='gv-select' value={workspaceId} onChange={e => setWorkspaceId(e.target.value)}>
+            <option value=''>{t('formWorkspaceFollow')}</option>
+            {workspaces.map(ws => <option key={ws.id} value={ws.id}>{ws.title}</option>)}
+          </select>
+        </div>
+        {catalog.length > 0 && (
+          <div style={{ flex: '1 1 220px' }}>
+            <label>{t('formModel')}</label>
+            <select className='gv-select' value={modelKey} onChange={e => setModelKey(e.target.value)}>
+              <option value=''>{t('formModelFollow')}</option>
+              {catalog.map(entry => (
+                <option key={`${entry.provider}|${entry.model}`} value={`${entry.provider}|${entry.model}`}>
+                  {entry.modelName === entry.model ? `${entry.providerName} / ${entry.model}` : `${entry.modelName}`}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+      </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 4px' }}>
         <span style={{ fontSize: 12, color: 'var(--gv-fg-secondary, var(--dsw-alias-label-secondary, #5a6472))' }}>{t('formRoots')}</span>
         <button className='gv-btn' disabled={picking} onClick={pick}>{picking ? '…' : t('pickDir')}</button>
