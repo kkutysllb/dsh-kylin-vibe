@@ -9,7 +9,8 @@
 import { readFileSync } from 'node:fs'
 
 import { chunkText, type ChunkOptions } from './chunker.ts'
-import { computeMentions, extractChunk, type LlmCompleter } from './extractor.ts'
+import { DOC_EXTRACT_EXTS, extOf, extractDocText, IMAGE_EXTS, imageMimeOf, LEGACY_EXTS } from './extract-doc.ts'
+import { computeMentions, extractChunk, extractImage, type LlmCompleter, type VisionCompleter } from './extractor.ts'
 import { normName } from './types.ts'
 import type { ExtractionDelta, SqliteGraphStore } from './graphstore.ts'
 import { recomputeCommunities } from './lpa.ts'
@@ -40,6 +41,8 @@ export interface IngestConfig {
 export interface IngestDeps {
   readonly llm: LlmCompleter
   readonly summarize: CommunitySummarizer
+  /** 多模态视觉链路（可选）：缺席时图片文件标记 failed/vision-unavailable。 */
+  readonly vision?: VisionCompleter
 }
 
 export type IngestPhase = 'scanning' | 'extracting' | 'communities' | 'summarizing'
@@ -112,16 +115,61 @@ export async function runIngest(
     if (signal?.aborted) { aborted = true; break }
     onProgress?.({ phase: 'extracting', filesDone: done, filesTotal: dirty.length, currentFile: f.path, quarantined })
 
+    const ext = extOf(f.path)
+    const src = store.upsertSource({ path: f.path, absPath: f.absPath, contentHash: f.contentHash, sizeBytes: f.sizeBytes, mtimeMs: f.mtimeMs })
+
+    // ── 扩展名路由（优先于 NUL 启发）：图片 / 可抽取文档 / 旧格式 ──
+    if (IMAGE_EXTS.has(ext)) {
+      const vision = deps.vision
+      const mime = imageMimeOf(ext)
+      if (vision === undefined || mime === null) {
+        store.setSourceState(src.id, 'failed', 'vision-unavailable（当前宿主/模型不支持图片理解，可切换多模态模型后重新索引）')
+        skipped++
+        done++
+        continue
+      }
+      const imageRes = await extractImage(
+        vision,
+        { data: new Uint8Array(readFileSync(f.absPath)), mime, name: f.path.split('/').pop() ?? f.path },
+        f.path, cfg.extract, signal,
+      )
+      if (applyImageExtraction(store, src.id, f.path, imageRes)) {
+        store.setSourceState(src.id, 'merged')
+      } else {
+        store.setSourceState(src.id, 'failed', `vision-${imageRes.errorCode}：${imageRes.detail}`)
+      }
+      cost.llmCalls += imageRes.llmCalls
+      done++
+      continue
+    }
+    if (DOC_EXTRACT_EXTS.has(ext) || LEGACY_EXTS.has(ext)) {
+      const doc = await extractDocText(f.absPath, f.sizeBytes)
+      if (doc.kind === 'unsupported') {
+        store.setSourceState(src.id, 'failed', doc.reason)
+        skipped++
+        done++
+        continue
+      }
+      if (doc.kind === 'failed') {
+        store.setSourceState(src.id, 'failed', doc.reason)
+        skipped++
+        done++
+        continue
+      }
+      // 抽取成功 → 以抽取文本走通用分块/抽取管线（落到下方 text 路径）
+      await ingestText(store, cfg, deps, f, src, doc.text, signal, (phase) => { if (phase === 'abort') aborted = true }, (n) => { cost.llmCalls += n; return true }, (q) => { quarantined += q; if (q) fileFlags.failed = false })
+      done++
+      continue
+    }
+
     const buf = readFileSync(f.absPath)
     if (isBinary(buf)) {
       skipped++
-      const src = store.upsertSource({ path: f.path, absPath: f.absPath, contentHash: f.contentHash, sizeBytes: f.sizeBytes, mtimeMs: f.mtimeMs })
       store.setSourceState(src.id, 'failed', 'skipped-binary')
       done++
       continue
     }
     const text = buf.toString('utf8')
-    const src = store.upsertSource({ path: f.path, absPath: f.absPath, contentHash: f.contentHash, sizeBytes: f.sizeBytes, mtimeMs: f.mtimeMs })
 
     // C：分块（replaceChunks 自带 FTS 同步）
     const chunks = chunkText(f.path, text, cfg.chunk)

@@ -120,6 +120,84 @@ export function computeMentions(text: string, names: readonly string[]): { normN
   return out.sort((a, b) => a.spanStart - b.spanStart)
 }
 
+// ── 图片视觉抽取（多模态，2026-10 用户裁定纳入）─────────────────────────────
+
+export const VISION_SYSTEM = `你是图片知识抽取器。观察图片内容（架构图/流程图/组织结构/表格截图/照片等），抽取实体与关系。
+实体类型（封闭集）：${ENTITY_TYPES.join(', ')}
+规则：
+- 只抽取图片中有明确依据的项；看不清/不确定就不抽（宁缺勿滥）
+- 实体名使用图片中出现的原文；表格截图按行列抽取实体并建立关系
+- 每项给 confidence，取值 0.6 / 0.8 / 1.0
+- 关系类型（封闭集）：${RELATION_TYPES.join(', ')}
+输出：仅输出 JSON，无其他文本。模式：
+{"entities":[{"n":"名称","t":"类型","d":"≤40字描述","c":0.8}],"relations":[{"s":"源名","r":"类型","o":"目标名","d":"≤40字描述","c":0.8}]}`
+
+/** 宿主无关的视觉补全抽象：save 上传图片得到不透明引用，complete 携图补全。
+ * 宿主 provider 用 attachments.saveImages + llm stream image 块实现；
+ * 测试注入 fixture。ref 不透明——ingest 层不感知附件服务契约。 */
+export interface VisionCompleter {
+  save(input: { readonly data: Uint8Array; readonly mime: string; readonly name: string }): Promise<unknown>
+  complete(system: string, user: string, ref: unknown, signal?: AbortSignal): Promise<string>
+}
+
+/** 图片抽取：同款成本纪律（≤1+retries 次调用，解析失败重试携原图）。 */
+export async function extractImage(
+  vision: VisionCompleter,
+  image: { readonly data: Uint8Array; readonly mime: string; readonly name: string },
+  sourcePath: string,
+  opts: ExtractChunkOptions = {},
+  signal?: AbortSignal,
+): Promise<ExtractChunkResult> {
+  const minConfidence = opts.minConfidence ?? 0.6
+  const retries = opts.repairRetries ?? 1
+  let ref: unknown
+  try {
+    ref = await vision.save(image)
+  } catch (err) {
+    return { ok: false, errorCode: 'LLM_ERROR', detail: `图片上传失败：${err instanceof Error ? err.message : String(err)}`, rawOutput: null, llmCalls: 0 }
+  }
+
+  let raw: string
+  try {
+    raw = await vision.complete(VISION_SYSTEM, `来源：${sourcePath}\n\n请观察这张图片并抽取实体与关系。`, ref, signal)
+  } catch (err) {
+    return { ok: false, errorCode: 'LLM_ERROR', detail: err instanceof Error ? err.message : String(err), rawOutput: null, llmCalls: 1 }
+  }
+  let llmCalls = 1
+
+  let lastError = ''
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    if (signal?.aborted) return { ok: false, errorCode: 'LLM_ERROR', detail: 'aborted', rawOutput: raw, llmCalls }
+    let obj: unknown
+    try {
+      obj = JSON.parse(stripFences(raw))
+    } catch (err) {
+      lastError = err instanceof Error ? err.message : String(err)
+      if (attempt < retries) {
+        try {
+          raw = await vision.complete(
+            '你的上一个输出不是合法 JSON。仅输出修正后的 JSON，无其他文本。',
+            `上次输出：\n${raw.slice(0, 4000)}\n\n错误：${lastError}\n\n请输出修正后的完整 JSON。`,
+            ref, signal,
+          )
+          llmCalls++
+          continue
+        } catch (err2) {
+          return { ok: false, errorCode: 'LLM_ERROR', detail: err2 instanceof Error ? err2.message : String(err2), rawOutput: raw, llmCalls }
+        }
+      }
+      return { ok: false, errorCode: 'PARSE_FAILED', detail: lastError, rawOutput: raw, llmCalls }
+    }
+    const { items, dropped } = validateExtraction(obj, minConfidence)
+    if (items.entities.length === 0 && items.relations.length === 0) {
+      if (dropped > 0) return { ok: false, errorCode: 'PARSE_FAILED', detail: `${dropped} 条目未通过校验被全部丢弃`, rawOutput: raw, llmCalls }
+      return { ok: false, errorCode: 'EMPTY', detail: '图片中无可抽取的实体或关系', rawOutput: raw, llmCalls }
+    }
+    return { ok: true, items, dropped, llmCalls }
+  }
+  return { ok: false, errorCode: 'PARSE_FAILED', detail: lastError, rawOutput: raw, llmCalls }
+}
+
 // ── 单 chunk 抽取编排 ───────────────────────────────────────────────────────
 
 export interface ExtractChunkOptions {
