@@ -138,6 +138,27 @@ describe('applyExtraction：归并与聚合', () => {
     assert.equal(store.allRelations().some(r => r.id === rel.id), false)
   })
 
+  test('relationEvidence：同 chunk 双端点 mention 去重（JOIN 扇出回归）', () => {
+    const { sourceId, chunkId } = seedFile('h.md', '更正库存服务推送更正通知服务')
+    store.applyExtraction(delta(sourceId, chunkId,
+      [
+        { normName: '更正库存服务', name: '更正库存服务', type: 'module', description: null, confidence: 0.7 },
+        { normName: '更正通知服务', name: '更正通知服务', type: 'module', description: null, confidence: 0.7 },
+      ],
+      [{ srcNorm: '更正库存服务', dstNorm: '更正通知服务', type: 'uses', description: '推送', confidence: 0.7 }],
+      [
+        { normName: '更正库存服务', spanStart: 0, spanEnd: 6 },
+        { normName: '更正库存服务', spanStart: 10, spanEnd: 16 },
+        { normName: '更正通知服务', spanStart: 7, spanEnd: 13 },
+      ],
+    ))
+    const rel = store.allRelations().find(r => r.type === 'uses' && r.description === '推送')!
+    const ev = store.relationEvidence(rel.id)
+    assert.equal(ev.length, 1, '一个 chunk 一条证据，不被 mention 条数翻倍')
+    assert.equal(ev[0]!.startLine, 1)
+    store.forget({ kind: 'file', path: 'h.md' })
+  })
+
   test('关系端点缺失时跳过，不炸批次', () => {
     const { sourceId, chunkId } = seedFile('f.md', '幽灵关系')
     const before = store.allRelations().length

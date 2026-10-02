@@ -589,22 +589,30 @@ export class SqliteGraphStore {
 
   /** 关系的 mention 原文（审查页右栏）。 */
   relationEvidence(relationId: number): readonly { path: string; startLine: number; endLine: number; text: string; spanStart: number | null; spanEnd: number | null }[] {
+    // 注意扇出：同 chunk 内 src/dst 端点各有多条 mention 时 JOIN 会翻倍，
+    // 按 chunk 去重（保留最早 mention span），一条证据 = 一个 chunk。
     const rows = this.db.prepare(
-      `SELECT s.path, c.start_line, c.end_line, c.text, m.span_start AS spanStart, m.span_end AS spanEnd
+      `SELECT re.chunk_id AS chunkId, s.path, c.start_line, c.end_line, c.text, m.span_start AS spanStart, m.span_end AS spanEnd
        FROM relation_evidence re
        JOIN chunk c ON c.id = re.chunk_id
        JOIN source s ON s.id = c.source_id
        LEFT JOIN mention m ON m.chunk_id = re.chunk_id AND (m.entity_id = (SELECT src_id FROM relation WHERE id = ?) OR m.entity_id = (SELECT dst_id FROM relation WHERE id = ?))
-       WHERE re.relation_id = ? LIMIT 4`,
+       WHERE re.relation_id = ? LIMIT 12`,
     ).all(BigInt(relationId), BigInt(relationId), BigInt(relationId)) as Array<Record<string, unknown>>
-    return rows.map(r => ({
-      path: r.path as string,
-      startLine: Number(r.start_line as number | bigint),
-      endLine: Number(r.end_line as number | bigint),
-      text: r.text as string,
-      spanStart: r.spanStart === null || r.spanStart === undefined ? null : Number(r.spanStart as number | bigint),
-      spanEnd: r.spanEnd === null || r.spanEnd === undefined ? null : Number(r.spanEnd as number | bigint),
-    }))
+    const byChunk = new Map<number, { path: string; startLine: number; endLine: number; text: string; spanStart: number | null; spanEnd: number | null }>()
+    for (const r of rows) {
+      const chunkId = Number(r.chunkId as number | bigint)
+      if (byChunk.has(chunkId)) continue
+      byChunk.set(chunkId, {
+        path: r.path as string,
+        startLine: Number(r.start_line as number | bigint),
+        endLine: Number(r.end_line as number | bigint),
+        text: r.text as string,
+        spanStart: r.spanStart === null || r.spanStart === undefined ? null : Number(r.spanStart as number | bigint),
+        spanEnd: r.spanEnd === null || r.spanEnd === undefined ? null : Number(r.spanEnd as number | bigint),
+      })
+    }
+    return [...byChunk.values()]
   }
 
   /** 给定实体集内部的边（local 证据组装用）。 */
