@@ -9,7 +9,7 @@
  *   返回 'copied'/'none'，绝不返回假 'submitted'。
  */
 
-export type DelegateResult = 'submitted' | 'copied' | 'none'
+export type DelegateResult = 'submitted' | 'draft' | 'copied' | 'none'
 
 /** 宿主输入壳（sessions.scope(id).conversation.input.for(actx)）。 */
 interface InputShell {
@@ -53,6 +53,16 @@ export function createHostBridge(ctx: BridgeCtx): HostBridge {
     try { ctx.layout?.selectPanel?.(null) } catch { /* 服务不可达：留在当前面板 */ }
   }
 
+  /** 会话视图导航：uiWorkspace.openSession（宿主架构正路）→ sessions.open
+   * （旧形态兜底）→ 都缺席时留在当前视图（会话仍在侧边栏可见）。 */
+  const navigateToSession = (target: string): void => {
+    const nav = ctx.uiWorkspace?.openSession
+    if (typeof nav === 'function') {
+      try { nav.call(ctx.uiWorkspace, target); return } catch { /* 落兜底 */ }
+    }
+    try { ctx.sessions?.open?.(target) } catch { /* 视图维持现状 */ }
+  }
+
   const clipboardFallback = async (text: string): Promise<DelegateResult> => {
     let copied = false
     try {
@@ -64,7 +74,9 @@ export function createHostBridge(ctx: BridgeCtx): HostBridge {
     try {
       const current = ctx.sessions?.list?.getSnapshot?.().current
       if (current === undefined && typeof ctx.sessions?.create === 'function') {
-        await ctx.sessions.create().then(id => { try { ctx.sessions?.open?.(id) } catch { /* 已选中 */ } }).catch(() => { /* 无落点 */ })
+        await ctx.sessions.create().then(id => { navigateToSession(id) }).catch(() => { /* 无落点 */ })
+      } else if (current !== undefined) {
+        navigateToSession(current)
       }
     } catch { /* 服务不可达 */ }
     backToChat()
@@ -94,22 +106,21 @@ export function createHostBridge(ctx: BridgeCtx): HostBridge {
       try {
         const sessions = ctx.sessions
         if (sessions?.list?.getSnapshot === undefined) return await clipboardFallback(prompt)
-        const sessionId = sessions.list.getSnapshot().current
-        if (sessionId === undefined || sessionId === null) {
+        let target = sessions.list.getSnapshot().current ?? null
+        if (target === null) {
           if (typeof sessions.create !== 'function') return await clipboardFallback(prompt)
-          const created = await sessions.create().catch(() => undefined)
-          if (created === undefined) return await clipboardFallback(prompt)
-          try { sessions.open?.(created) } catch { /* 已选中 */ }
-          backToChat()
-          const landed = submitRetained(sessions, created, prompt)
-            ?? await submitWithRetry(sessions, created, prompt)
-          if (landed === true) return 'submitted'
-          return await clipboardFallback(prompt)
+          target = await sessions.create().catch(() => null)
+          if (target === null) return await clipboardFallback(prompt)
         }
         backToChat()
-        const landed = submitRetained(sessions, sessionId, prompt)
-          ?? await submitWithRetry(sessions, sessionId, prompt)
+        // 视图导航归 ui-workspace 所有（sessions 服务没有 open——0.2.0-rc.2
+        // 实测缺失）；不导航用户就停在空白会话，看不到已投递的提示词。
+        navigateToSession(target)
+        const landed = submitRetained(sessions, target, prompt)
+          ?? await submitWithRetry(sessions, target, prompt)
+        // true=已发送；false=输入面可达但 submit 缺席（草稿已写入，用户手动发送）
         if (landed === true) return 'submitted'
+        if (landed === false) return 'draft'
         return await clipboardFallback(prompt)
       } catch {
         return await clipboardFallback(prompt)
