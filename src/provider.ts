@@ -12,6 +12,7 @@ import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf } from 
 import type { ChunkOptions } from './core/chunker.ts'
 import { extractChunk, type LlmCompleter, type VisionCompleter } from './core/extractor.ts'
 import { runIngest, type CommunitySummarizer, type IngestConfig } from './core/ingest.ts'
+import { extractTerms } from './core/lexical.ts'
 import { KbRegistry, migrateLegacyWorkspaces } from './core/kb.ts'
 import { SqliteGraphStore } from './core/graphstore.ts'
 import { diffAgainstIndex, scanRoots } from './core/scanner.ts'
@@ -461,7 +462,6 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[] {
     const kb = this.resolveKb(target)
     const store = this.storeOf(kb)
-    const { extractTerms } = require('./core/lexical.ts') as never as typeof import('./core/lexical.ts')
     const terms = extractTerms(query)
     const raws = terms.length > 0
       ? store.searchEntityCards(terms, limit)
@@ -647,6 +647,36 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       changed: diff.changed.slice(0, 20).map(f => f.path),
       removed: diff.removed.slice(0, 20),
     }
+  }
+
+  /** 图谱视图增量展开（Neo4j Browser 模式）：节点一跳邻居与边。 */
+  expandNode(target: KbRef, nodeId: number): {
+    readonly node: { readonly id: number; readonly name: string; readonly type: string; readonly degree: number } | null
+    readonly neighbors: readonly { readonly id: number; readonly name: string; readonly type: string; readonly degree: number }[]
+    readonly edges: readonly { readonly s: number; readonly t: number; readonly type: string; readonly weight: number; readonly evidence: string }[]
+  } {
+    const store = this.storeOf(this.resolveKb(target))
+    const center = store.getEntityById(nodeId)
+    if (center === null) throw new GraphRagError('INVALID', `实体不存在：${nodeId}`)
+    const edges = store.neighbors(nodeId, 'both').map(edge => {
+      const rel = edge.relation
+      const ev = store.relationEvidence(rel.id)[0]
+      return {
+        s: rel.srcId, t: rel.dstId, type: rel.type, weight: rel.weight,
+        evidence: ev !== undefined ? `${ev.path}:${ev.startLine}-${ev.endLine}` : '',
+      }
+    })
+    const seen = new Set<number>()
+    const neighbors: { readonly id: number; readonly name: string; readonly type: string; readonly degree: number }[] = []
+    for (const e of edges) {
+      const otherId = e.s === nodeId ? e.t : e.s
+      if (seen.has(otherId)) continue
+      seen.add(otherId)
+      const ent = store.getEntityById(otherId)
+      if (ent === null) continue
+      neighbors.push({ id: ent.id, name: ent.name, type: ent.type, degree: ent.degree })
+    }
+    return { node: { id: center.id, name: center.name, type: center.type, degree: center.degree }, neighbors, edges }
   }
 
   /** 删除旧知识：整文件图谱级联清除；笔记文件同时删除物理文件。 */

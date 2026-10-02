@@ -202,7 +202,7 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
         ))}
       </div>
       <div className='gv-split-right'>
-        <GraphView cards={cards} t={t} />
+        <GraphView cards={cards} t={t} runtime={runtime} kbId={kbId} />
       </div>
     </div>
   )
@@ -275,12 +275,34 @@ function buildGraph(cards: readonly EntityCard[]): { readonly nodes: GraphNodeDa
   return { nodes, edges }
 }
 
-/** Fruchterman-Reingold 简化实现：库仑斥力 + 弹簧 + 向心力，退火迭代。 */
-function simulate(nodes: GraphNodeData[], edges: readonly GraphEdgeData[], width: number, height: number, ticks: number): void {
+/** Fruchterman-Reingold 简化实现：库仑斥力 + 弹簧 + 向心力，退火迭代。
+ * seed：已有位置（增量展开时保持现布局）；anchor：未定位新节点的聚拢锚点。 */
+function simulate(
+  nodes: GraphNodeData[],
+  edges: readonly GraphEdgeData[],
+  width: number,
+  height: number,
+  ticks: number,
+  seed?: Map<string, { x: number; y: number }>,
+  anchor?: { x: number; y: number },
+  startAlpha = 1,
+): void {
   const n = nodes.length
   if (n === 0) return
   const radius = Math.min(width, height) * 0.38
   nodes.forEach((node, i) => {
+    const seeded = seed?.get(node.key)
+    if (seeded !== undefined) {
+      node.x = seeded.x
+      node.y = seeded.y
+      return
+    }
+    if (anchor !== undefined) {
+      const angle = (2 * Math.PI * i) / Math.max(n, 1)
+      node.x = Math.max(30, Math.min(width - 30, anchor.x + 70 * Math.cos(angle) + (Math.random() - 0.5) * 24))
+      node.y = Math.max(26, Math.min(height - 26, anchor.y + 70 * Math.sin(angle) + (Math.random() - 0.5) * 24))
+      return
+    }
     const angle = (2 * Math.PI * i) / n
     node.x = width / 2 + radius * Math.cos(angle)
     node.y = height / 2 + radius * Math.sin(angle)
@@ -295,7 +317,7 @@ function simulate(nodes: GraphNodeData[], edges: readonly GraphEdgeData[], width
     adjacency[si]?.push({ other: ti, rest: k * 1.35 })
     adjacency[ti]?.push({ other: si, rest: k * 1.35 })
   }
-  let alpha = 1
+  let alpha = startAlpha
   const disp = nodes.map(() => ({ x: 0, y: 0 }))
   for (let tick = 0; tick < ticks; tick++) {
     for (let i = 0; i < n; i++) {
@@ -348,22 +370,54 @@ function simulate(nodes: GraphNodeData[], edges: readonly GraphEdgeData[], width
   }
 }
 
-function GraphView(props: { readonly cards: readonly EntityCard[]; readonly t: Translate }): React.ReactElement {
-  const { cards, t } = props
+const MAX_GRAPH_NODES = 600
+
+
+function GraphView(props: { readonly cards: readonly EntityCard[]; readonly t: Translate; readonly runtime: KbRuntime; readonly kbId: string }): React.ReactElement {
+  const { cards, t, runtime, kbId } = props
   const W = 920
   const H = 640
+  /** 增量展开并入的节点/边（Neo4j Browser 模式：双击节点逐步展开全库）。 */
+  const [extra, setExtra] = useState<{ nodes: readonly { id: number; name: string; type: string; degree: number }[]; edges: readonly { s: number; t: number; type: string; weight: number; evidence: string }[] }>({ nodes: [], edges: [] })
+  const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(new Set())
+  const [expanding, setExpanding] = useState(false)
   const graph = useMemo(() => {
     const built = buildGraph(cards)
-    simulate(built.nodes as GraphNodeData[], built.edges, W, H, cards.length > 0 ? 260 : 0)
-    return built
-  }, [cards])
+    const byId = new Map(built.nodes.map(n => [n.id, n] as const))
+    const edgeKeys = new Set(built.edges.map(e => e.key))
+    for (const n of extra.nodes) {
+      if (byId.has(n.id)) continue
+      byId.set(n.id, { id: n.id, key: `n${n.id}`, name: n.name, type: n.type, degree: n.degree, isCard: false, x: 0, y: 0 })
+    }
+    const nodes = [...byId.values()]
+    const edges = [...built.edges]
+    for (const e of extra.edges) {
+      const key = e.s < e.t ? `${e.s}|${e.t}|${e.type}` : `${e.t}|${e.s}|${e.type}`
+      if (edgeKeys.has(key)) continue
+      edgeKeys.add(key)
+      edges.push({ key, s: e.s, t: e.t, type: e.type, weight: e.weight, evidence: e.evidence })
+    }
+    return { nodes, edges }
+  }, [cards, extra])
   const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
   useEffect(() => {
-    setPositions(new Map(graph.nodes.map(n => [n.key, { x: n.x, y: n.y }] as const)))
+    try {
+      const seed = new Map<string, { x: number; y: number }>()
+      for (const n of graph.nodes) {
+        const prev = positions.get(n.key)
+        if (prev !== undefined) seed.set(n.key, prev)
+      }
+      simulate(graph.nodes as GraphNodeData[], graph.edges, W, H, positions.size === 0 ? 260 : 150, seed, pendingAnchor.current ?? undefined, positions.size === 0 ? 1 : 0.7)
+      pendingAnchor.current = null
+      setPositions(new Map(graph.nodes.map(n => [n.key, { x: n.x, y: n.y }] as const)))
+    } catch (err) {
+      // 布局失败不拖垮面板树：节点留在原位（0,0 的由 fit 视图兜底）
+      console.error('graph layout failed', err)
+    }
   }, [graph])
   const [view, setView] = useState({ x: 0, y: 0, k: 1 })
   const [hover, setHover] = useState<string | null>(null)
-  const dragNode = useRef<{ key: string } | null>(null)
+  const dragNode = useRef<{ key: string; moved: boolean } | null>(null)
   const panState = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
   const svgRef = useRef<SVGSVGElement | null>(null)
 
@@ -387,6 +441,25 @@ function GraphView(props: { readonly cards: readonly EntityCard[]; readonly t: T
     return { x: (sx - view.x) / view.k, y: (sy - view.y) / view.k }
   }
 
+  const expandNode = (nodeId: number, anchor: { x: number; y: number } | undefined): void => {
+    if (expanding || expandedIds.has(nodeId)) return
+    if (graph.nodes.length >= MAX_GRAPH_NODES) {
+      runtime.pushNotice(t('graphLimit', { limit: MAX_GRAPH_NODES }))
+      return
+    }
+    setExpanding(true)
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'expand', { id: kbId, nodeId }))
+      .then((v) => {
+        const r = v as { neighbors: readonly { id: number; name: string; type: string; degree: number }[]; edges: readonly { s: number; t: number; type: string; weight: number; evidence: string }[] }
+        setExtra(prev => ({
+          nodes: [...prev.nodes, ...r.neighbors],
+          edges: [...prev.edges, ...r.edges],
+        }))
+        setExpandedIds(prev => new Set(prev).add(nodeId))
+      })
+      .catch(err => runtime.pushNotice(String(err)))
+      .finally(() => setExpanding(false))
+  }
   const nodeRadius = (n: GraphNodeData): number => 5 + Math.min(11, Math.sqrt(n.degree) * 1.6) + (n.isCard ? 1.5 : 0)
   const typesUsed = useMemo(() => {
     const set = new Map<string, number>()

@@ -58,6 +58,8 @@ await build({
       // 平台单例模块表的 require 存进 bundle 内变量：运行时软取宿主能力
       // （如 ui-primitives 的 MarkdownText），缺席宿主回落自有渲染。
       'var __bundleRequire = typeof require === "function" ? require : undefined;',
+      'window.addEventListener("error", function (e) { (window.__gvErrors = window.__gvErrors || []).push(String(e.message)); });',
+      'window.addEventListener("unhandledrejection", function (e) { (window.__gvErrors = window.__gvErrors || []).push("rej: " + String(e.reason)); });',,
     ].join('\n'),
   },
   footer: { js: 'return module.exports; } });' },
