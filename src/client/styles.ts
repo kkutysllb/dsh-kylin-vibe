@@ -65,5 +65,6 @@ const CSS = `
 .gv-table td { padding: 3px 8px 3px 0; border-top: 1px solid var(--gv-border); color: var(--gv-fg); }
 .gv-evidence { margin: 6px 0; }
 .gv-md { max-height: 420px; overflow-y: auto; font-size: 12px; }
+.gv-selchip { position: fixed; z-index: 90; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
 .gv-pre { background: var(--gv-fill); border-radius: 8px; padding: 8px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--gv-fg); }
 `

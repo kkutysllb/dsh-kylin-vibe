@@ -35,6 +35,7 @@ describe('GraphRagServiceImpl', () => {
     estimate: () => ({ files: 0, estCalls: 0 }),
     browseEntities: () => [],
     sampleForReview: () => [],
+    correctFromSelection: async () => ({ triples: [] }),
     reviewRelation: () => ({ excluded: false, corrected: false }),
     healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
   })

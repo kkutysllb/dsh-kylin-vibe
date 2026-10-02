@@ -9,7 +9,7 @@ import { mkdirSync, realpathSync, rmSync } from 'node:fs'
 
 import { llmCompleterOf, llmServiceOf, resolveDataDir } from './adapter.ts'
 import type { ChunkOptions } from './core/chunker.ts'
-import type { LlmCompleter } from './core/extractor.ts'
+import { extractChunk, type LlmCompleter } from './core/extractor.ts'
 import { runIngest, type CommunitySummarizer, type IngestConfig } from './core/ingest.ts'
 import { KbRegistry, migrateLegacyWorkspaces } from './core/kb.ts'
 import { SqliteGraphStore } from './core/graphstore.ts'
@@ -481,6 +481,23 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       confidence: x.relation.confidence,
       evidence: store.relationEvidence(x.relation.id).map(ev => ({ path: ev.path, startLine: ev.startLine, endLine: ev.endLine, text: ev.text })),
     }))
+  }
+
+  /** 选区更正建议：对用户滑选的原文片段跑同款 SPO 抽取，返回候选三元组
+   * 供更正编辑器预填。模型不可用/解析失败返回空三元组（前端回落手动填写）。 */
+  async correctFromSelection(target: KbRef | undefined, text: string): Promise<{ readonly triples: ReadonlyArray<{ s: string; r: string; o: string }> }> {
+    const clipped = text.length > 2000 ? text.slice(0, 2000) : text
+    if (clipped.trim() === '') return { triples: [] }
+    const llm = this.completer()
+    if (llm === null) throw new GraphRagError('NO_PROVIDER', '模型 provider 不可用，请手动填写更正')
+    const result = await extractChunk(llm, clipped, '面板更正选区', { minConfidence: 0.6, repairRetries: 0 })
+    if (!result.ok) return { triples: [] }
+    return {
+      triples: result.items.relations
+        .filter(rel => rel.s.trim() !== '' && rel.o.trim() !== '')
+        .slice(0, 5)
+        .map(rel => ({ s: rel.s.trim(), r: rel.r.trim(), o: rel.o.trim() })),
+    }
   }
 
   /** 审查判定：correct/wrong 计入抽样统计；wrong 进排除清单（置信度置 -1）。

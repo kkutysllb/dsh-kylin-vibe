@@ -145,6 +145,41 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   const [done, setDone] = useState(0)
   /** 更正编辑器：非空 = 错误/存疑后展开（预填当前三元组），携带待提交判定。 */
   const [correcting, setCorrecting] = useState<{ readonly verdict: 'wrong' | 'unsure'; readonly s: string; readonly r: string; readonly o: string } | null>(null)
+  const [seeding, setSeeding] = useState(false)
+  /** 滑选浮标：非空 = 证据区内有非空选区（视口坐标）。 */
+  const [selChip, setSelChip] = useState<{ readonly x: number; readonly y: number; readonly text: string } | null>(null)
+
+  // 证据区内滑选 → 出现「更正」浮标；点它用所选原文向模型要三元组预填编辑器
+  const onEvidenceMouseUp = (): void => {
+    const sel = window.getSelection()
+    const text = sel?.toString() ?? ''
+    const anchor = sel?.anchorNode?.parentElement
+    if (sel === null || sel.isCollapsed || text.trim().length < 2 || anchor === null || anchor.closest('.gv-md, .gv-pre') === null) {
+      setSelChip(null)
+      return
+    }
+    const rect = sel.getRangeAt(0).getBoundingClientRect()
+    setSelChip({ x: Math.max(8, rect.left), y: rect.bottom + 6, text: text.trim().slice(0, 2000) })
+  }
+
+  const seedFromSelection = (selected: string): void => {
+    setSelChip(null)
+    setSeeding(true)
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'correctFromSelection', { id: kbId, text: selected }))
+      .then((v) => {
+        const triples = (v as { triples?: ReadonlyArray<{ s: string; r: string; o: string }> }).triples ?? []
+        const best = triples[0]
+        setCorrecting(prev => ({
+          verdict: prev?.verdict ?? 'wrong',
+          s: best?.s ?? prev?.s ?? '',
+          r: best?.r ?? prev?.r ?? '',
+          o: best?.o ?? prev?.o ?? '',
+        }))
+        if (best === undefined) runtime.pushNotice(t('selNoTriple'))
+      })
+      .catch(err => runtime.pushNotice(`${t('selFailed')}: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => setSeeding(false))
+  }
 
   const load = (): void => {
     setLoading(true)
@@ -198,12 +233,14 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
           <span className='gv-badge'>{t('confidence')}: {current.confidence.toFixed(2)}</span>
         </div>
         <div className='gv-sub'>{t('reviewQuestion')}</div>
-        {current.evidence.map((ev, i) => (
-          <div key={i} className='gv-evidence'>
-            <div className='gv-cost'>{ev.path}:{ev.startLine}-{ev.endLine}</div>
-            <ChunkText text={ev.text} t={t} />
-          </div>
-        ))}
+        <div onMouseUp={onEvidenceMouseUp}>
+          {current.evidence.map((ev, i) => (
+            <div key={i} className='gv-evidence'>
+              <div className='gv-cost'>{ev.path}:{ev.startLine}-{ev.endLine}</div>
+              <ChunkText text={ev.text} t={t} />
+            </div>
+          ))}
+        </div>
         <div className='gv-actions'>
           <button className='gv-btn gv-btn-primary' onClick={() => verdict('correct')}>{t('verdictCorrect')}</button>
           <button className='gv-btn gv-btn-danger' onClick={() => setCorrecting({ verdict: 'wrong', s: current.s, r: current.r, o: current.o })}>{t('verdictWrong')}</button>
@@ -211,7 +248,10 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
         </div>
         {correcting !== null && (
           <div className='gv-form' style={{ marginTop: 10 }}>
-            <div style={{ fontSize: 12, color: 'var(--gv-fg-secondary, var(--dsw-alias-label-secondary, #5a6472))' }}>{t('correctionTitle')}</div>
+            <div style={{ fontSize: 12, color: 'var(--gv-fg-secondary, var(--dsw-alias-label-secondary, #5a6472))' }}>
+              {t('correctionTitle')}
+              {seeding && <span>…</span>}
+            </div>
             <label>{t('correctionS')}</label>
             <input value={correcting.s} onChange={e => setCorrecting({ ...correcting, s: e.target.value })} />
             <label>{t('correctionR')}</label>
@@ -224,6 +264,14 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
               <button className='gv-btn' onClick={() => setCorrecting(null)}>{t('cancel')}</button>
             </div>
           </div>
+        )}
+        {selChip !== null && (
+          <button
+            className='gv-btn gv-btn-primary gv-selchip'
+            style={{ left: selChip.x, top: selChip.y }}
+            onMouseDown={e => e.preventDefault()}
+            onClick={() => seedFromSelection(selChip.text)}
+          >{t('selCorrect')}</button>
         )}
       </div>
     </div>

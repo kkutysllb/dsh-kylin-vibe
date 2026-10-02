@@ -114,10 +114,10 @@ describe('applyExtraction：归并与聚合', () => {
         { normName: '更正库存服务', name: '更正库存服务', type: 'module', description: null, confidence: 0.7 },
         { normName: '更正通知服务', name: '更正通知服务', type: 'module', description: null, confidence: 0.7 },
       ],
-      [{ srcNorm: '更正库存服务', dstNorm: '更正通知服务', type: 'pushes', description: '推送变更', confidence: 0.7 }],
+      [{ srcNorm: '更正库存服务', dstNorm: '更正通知服务', type: 'uses', description: '推送变更', confidence: 0.7 }],
       [{ normName: '更正库存服务', spanStart: 0, spanEnd: 6 }],
     ))
-    const rel = store.allRelations().find(r => r.type === 'pushes')!
+    const rel = store.allRelations().find(r => r.type === 'uses' && r.description === '推送变更')!
     store.excludeRelation(rel.id)
     const excludedBefore = store.excludedRelationCount()
     // 人工更正宾语：更正通知服务 → 更正短信网关（新实体，concept）
@@ -130,8 +130,8 @@ describe('applyExtraction：归并与聚合', () => {
     assert.equal(relAfter.dstId, gateway.id)
     assert.equal(gateway.type, 'concept', '缺失实体按 concept 建立')
     // 改类型 + 无实际变化分支
-    assert.equal(store.updateRelationEnds(rel.id, { type: 'notifies' }).changed, true)
-    assert.equal(store.allRelations().find(r => r.id === rel.id)?.type, 'notifies')
+    assert.equal(store.updateRelationEnds(rel.id, { type: 'depends_on' }).changed, true)
+    assert.equal(store.allRelations().find(r => r.id === rel.id)?.type, 'depends_on')
     assert.equal(store.updateRelationEnds(rel.id, {}).changed, false)
     // 还原共享 store：证据清扫删关系，孤儿实体（无 mention）随之清除
     store.forget({ kind: 'file', path: 'g.md' })

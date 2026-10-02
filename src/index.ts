@@ -109,6 +109,8 @@ export interface GraphRagProvider {
   // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
   sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
+  /** 选区更正建议：对滑选原文跑 SPO 抽取返回候选三元组（面板更正预填）。 */
+  correctFromSelection(target: KbRef | undefined, text: string): Promise<{ readonly triples: ReadonlyArray<{ s: string; r: string; o: string }> }>
   reviewRelation(
     target: KbRef,
     relationId: number,
