@@ -649,6 +649,53 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     }
   }
 
+  /** 点击邻居边 → 展开源 chunk 原文（0207 §3.3：行列号 + 文件路径定位）。 */
+  evidenceText(target: KbRef, path: string, lines: string): { readonly path: string; readonly lines: string; readonly text: string } | null {
+    const store = this.storeOf(this.resolveKb(target))
+    const src = store.getSource(path)
+    if (src === null) return null
+    const m = lines.match(/(\d+)-(\d+)/)
+    if (m === null) return null
+    const startLine = Number(m[1])
+    const endLine = Number(m[2])
+    let best: { text: string; lines: string } | null = null
+    for (const c of store.getChunks(src.id)) {
+      if (c.startLine <= startLine && c.endLine >= endLine) {
+        best = { text: c.text, lines: c.startLine + '-' + c.endLine }
+        break
+      }
+    }
+    return best === null ? null : { path, lines: best.lines, text: best.text }
+  }
+
+  /** 社区列表（0207 §3.3）：摘要 + 成员实体（按规模降序）。 */
+  communityList(target: KbRef, limit: number): readonly {
+    readonly id: number; readonly size: number; readonly summary: string | null; readonly top: readonly string[]
+  }[] {
+    const store = this.storeOf(this.resolveKb(target))
+    const rows = store.listCommunities()
+      .map(c => {
+        const summary = store.allSummaries().find(x => x.communityId === c.id) ?? null
+        const members = store.entitiesByCommunity(c.id, 8)
+        return { id: c.id, size: c.memberCount, summary: summary === null ? null : summary.summary, top: members.map(m => m.name) }
+      })
+      .sort((a, b) => b.size - a.size)
+      .slice(0, Math.min(Math.max(limit, 1), 50))
+    return rows
+  }
+
+  /** 图谱视图：全量图谱（与卡片头 counts 同源，两处统计天然一致）。 */
+  graphAll(target: KbRef): {
+    readonly nodes: readonly { readonly id: number; readonly name: string; readonly type: string; readonly degree: number }[]
+    readonly edges: readonly { readonly s: number; readonly t: number; readonly type: string; readonly weight: number }[]
+  } {
+    const store = this.storeOf(this.resolveKb(target))
+    return {
+      nodes: store.allEntities().map(e => ({ id: e.id, name: e.name, type: e.type, degree: e.degree })),
+      edges: store.allRelations().map(r => ({ s: r.srcId, t: r.dstId, type: r.type, weight: r.weight })),
+    }
+  }
+
   /** 图谱视图增量展开（Neo4j Browser 模式）：节点一跳邻居与边。 */
   expandNode(target: KbRef, nodeId: number): {
     readonly node: { readonly id: number; readonly name: string; readonly type: string; readonly degree: number } | null

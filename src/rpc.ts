@@ -252,6 +252,10 @@ export async function handleKbRpc(
         const id = string(body['id'], 'id', 120)
         return ok(provider.changesPreview({ id }))
       }
+      case 'graphAll': {
+        const id = string(body['id'], 'id', 120)
+        return ok(provider.graphAll({ id }))
+      }
       case 'expand': {
         const id = string(body['id'], 'id', 120)
         const nodeId = Number(body['nodeId'])

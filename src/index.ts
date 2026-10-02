@@ -134,6 +134,11 @@ export interface GraphRagProvider {
   importDirectory(target: KbRef, dir: string): { readonly imported: number; readonly skipped: readonly { readonly path: string; readonly reason: string }[]; readonly started: boolean }
   /** 变更同步预览：扫描 diff（零 LLM），供面板"有变更"提示。 */
   changesPreview(target: KbRef): { readonly added: number; readonly changed: readonly string[]; readonly removed: readonly string[] }
+  /** 图谱视图：全量图谱（节点=全部实体，边=全部关系；与卡片头统计同源一致）。 */
+  graphAll(target: KbRef): {
+    readonly nodes: readonly { readonly id: number; readonly name: string; readonly type: string; readonly degree: number }[]
+    readonly edges: readonly { readonly s: number; readonly t: number; readonly type: string; readonly weight: number }[]
+  }
   /** 图谱视图增量展开：返回节点一跳邻居与边（Neo4j Browser 模式）。 */
   expandNode(target: KbRef, nodeId: number): {
     readonly node: { readonly id: number; readonly name: string; readonly type: string; readonly degree: number } | null

@@ -202,7 +202,7 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
         ))}
       </div>
       <div className='gv-split-right'>
-        <GraphView cards={cards} t={t} runtime={runtime} kbId={kbId} />
+        <GraphView t={t} runtime={runtime} kbId={kbId} />
       </div>
     </div>
   )
@@ -240,356 +240,413 @@ interface GraphEdgeData {
 
 /** 由浏览卡片构建节点/边：实体按 id 去重，关系按无向三元组去重
  * （同一关系会同时出现在两张卡的邻居表里）。 */
-function buildGraph(cards: readonly EntityCard[]): { readonly nodes: GraphNodeData[]; readonly edges: readonly GraphEdgeData[] } {
-  const byId = new Map<number, GraphNodeData>()
-  const edgeByKey = new Map<string, GraphEdgeData>()
-  const addNode = (id: number, name: string, type: string, degree: number, isCard: boolean): void => {
-    if (byId.has(id)) {
-      if (isCard) {
-        const n = byId.get(id)!
-        byId.set(id, { ...n, degree: Math.max(n.degree, degree), isCard: true })
-      }
-      return
-    }
-    byId.set(id, { id, key: `n${id}`, name, type, degree, isCard, x: 0, y: 0 })
-  }
-  for (const c of cards) addNode(c.id, c.name, c.type, c.degree, true)
-  for (const c of cards) {
-    for (const nb of c.neighbors) {
-      addNode(nb.otherId, nb.other, nb.otherType, 0, false)
-      const a = c.id
-      const b = nb.otherId
-      if (a === b) continue
-      const key = a < b ? `${a}|${b}|${nb.type}` : `${b}|${a}|${nb.type}`
-      if (edgeByKey.has(key)) continue
-      const ev = nb.evidence[0]
-      edgeByKey.set(key, {
-        key, s: nb.dir === 'out' ? a : b, t: nb.dir === 'out' ? b : a,
-        type: nb.type, weight: nb.weight,
-        evidence: ev !== undefined ? `${ev.path}:${ev.lines}` : '',
-      })
-    }
-  }
-  const nodes = [...byId.values()]
-  const edges = [...edgeByKey.values()]
-  return { nodes, edges }
-}
-
 /** Fruchterman-Reingold 简化实现：库仑斥力 + 弹簧 + 向心力，退火迭代。
  * seed：已有位置（增量展开时保持现布局）；anchor：未定位新节点的聚拢锚点。 */
-function simulate(
-  nodes: GraphNodeData[],
-  edges: readonly GraphEdgeData[],
-  width: number,
-  height: number,
-  ticks: number,
-  seed?: Map<string, { x: number; y: number }>,
-  anchor?: { x: number; y: number },
-  startAlpha = 1,
-): void {
-  const n = nodes.length
-  if (n === 0) return
-  const radius = Math.min(width, height) * 0.38
-  nodes.forEach((node, i) => {
-    const seeded = seed?.get(node.key)
-    if (seeded !== undefined) {
-      node.x = seeded.x
-      node.y = seeded.y
-      return
+function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; readonly kbId: string }): React.ReactElement {
+  const { t, runtime, kbId } = props
+  /** 全量图谱数据（与卡片头统计同源：节点=全部实体，边=全部关系）。 */
+  const [data, setData] = useState<{ nodes: { id: number; name: string; type: string; degree: number; x: number; y: number; vx: number; vy: number }[]; edges: { s: number; t: number; type: string; weight: number }[] } | null>(null)
+  const [loadErr, setLoadErr] = useState<string | null>(null)
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
+  const [hoverId, setHoverId] = useState<number | null>(null)
+  const [egoId, setEgoId] = useState<number | null>(null)
+  const [hoverTip, setHoverTip] = useState<{ x: number; y: number; text: string } | null>(null)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const wrapRef = useRef<HTMLDivElement | null>(null)
+  const dragNode = useRef<number | null>(null)
+  const panState = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
+  const alphaRef = useRef(1)
+  const rafRef = useRef<number>(0)
+
+  useEffect(() => {
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'graphAll', { id: kbId }))
+      .then((v) => {
+        const r = v as { nodes: { id: number; name: string; type: string; degree: number }[]; edges: { s: number; t: number; type: string; weight: number }[] }
+        setData({
+          nodes: r.nodes.map(n => ({ ...n, x: 0, y: 0, vx: 0, vy: 0 })),
+          edges: r.edges,
+        })
+        alphaRef.current = 1
+      })
+      .catch(err => setLoadErr(String(err)))
+  }, [kbId])
+
+  // ── Barnes-Hut 力导向（四叉树近似斥力，O(n log n) 扛全量）──
+  const layoutStep = (): void => {
+    if (data === null) return
+    const rect = wrapRef.current?.getBoundingClientRect()
+    const W = Math.max(rect?.width ?? 600, 300)
+    const H = Math.max(rect?.height ?? 400, 300)
+    const nodes = data.nodes
+    const n = nodes.length
+    if (n === 0) return
+    if (alphaRef.current <= 0.012) return
+    const k = Math.sqrt((W * H) / n) * 0.9
+    // 首帧：环形布点
+    if (nodes[0] !== undefined && nodes[0]!.x === 0 && nodes[0]!.y === 0 && nodes[n - 1]!.x === 0 && nodes[n - 1]!.y === 0) {
+      nodes.forEach((node, i) => {
+        const angle = (2 * Math.PI * i) / n
+        node.x = W / 2 + radius0(W, H) * Math.cos(angle)
+        node.y = H / 2 + radius0(W, H) * Math.sin(angle)
+      })
     }
-    if (anchor !== undefined) {
-      const angle = (2 * Math.PI * i) / Math.max(n, 1)
-      node.x = Math.max(30, Math.min(width - 30, anchor.x + 70 * Math.cos(angle) + (Math.random() - 0.5) * 24))
-      node.y = Math.max(26, Math.min(height - 26, anchor.y + 70 * Math.sin(angle) + (Math.random() - 0.5) * 24))
-      return
+    const indexBy = new Map<number, number>()
+    nodes.forEach((node, i) => indexBy.set(node.id, i))
+    // 四叉树
+    let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity
+    for (const node of nodes) {
+      if (node.x < minX) minX = node.x
+      if (node.y < minY) minY = node.y
+      if (node.x > maxX) maxX = node.x
+      if (node.y > maxY) maxY = node.y
     }
-    const angle = (2 * Math.PI * i) / n
-    node.x = width / 2 + radius * Math.cos(angle)
-    node.y = height / 2 + radius * Math.sin(angle)
-  })
-  const k = Math.sqrt((width * height) / Math.max(n, 1)) * 0.85
-  const index = new Map(nodes.map((node, i) => [node.key, i] as const))
-  const adjacency: { readonly other: number; readonly rest: number }[][] = nodes.map(() => [])
-  for (const e of edges) {
-    const si = index.get(`n${e.s}`)
-    const ti = index.get(`n${e.t}`)
-    if (si === undefined || ti === undefined) continue
-    adjacency[si]?.push({ other: ti, rest: k * 1.35 })
-    adjacency[ti]?.push({ other: si, rest: k * 1.35 })
-  }
-  let alpha = startAlpha
-  const disp = nodes.map(() => ({ x: 0, y: 0 }))
-  for (let tick = 0; tick < ticks; tick++) {
+    const quad = buildQuad(minX, minY, maxX, maxY)
+    for (let i = 0; i < n; i++) quadInsert(quad, nodes[i]!, i)
+    const dispX = new Float64Array(n)
+    const dispY = new Float64Array(n)
     for (let i = 0; i < n; i++) {
-      disp[i]!.x = 0
-      disp[i]!.y = 0
-      const a = nodes[i]!
-      for (let j = 0; j < n; j++) {
-        if (i === j) continue
-        const b = nodes[j]!
-        let dx = a.x - b.x
-        let dy = a.y - b.y
-        let d2 = dx * dx + dy * dy
-        if (d2 < 1) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); d2 = dx * dx + dy * dy + 0.01 }
-        const d = Math.sqrt(d2)
-        const f = (k * k) / d
-        disp[i]!.x += (dx / d) * f
-        disp[i]!.y += (dy / d) * f
-      }
+      const node = nodes[i]!
+      applyBH(quad, node, k, dispX, dispY, i)
     }
-    for (const e of edges) {
-      const si = index.get(`n${e.s}`)
-      const ti = index.get(`n${e.t}`)
-      if (si === undefined || ti === undefined) continue
-      const a = nodes[si]!
-      const b = nodes[ti]!
+    for (const e of data.edges) {
+      const ia = indexBy.get(e.s)
+      const ib = indexBy.get(e.t)
+      if (ia === undefined || ib === undefined) continue
+      const a = nodes[ia]!
+      const b = nodes[ib]!
       const dx = a.x - b.x
       const dy = a.y - b.y
       const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
-      const spring = adjacency[si]!.find(x => x.other === ti)?.rest ?? k * 1.35
-      const f = (d * d) / spring
-      disp[si]!.x -= (dx / d) * f
-      disp[si]!.y -= (dy / d) * f
-      disp[ti]!.x += (dx / d) * f
-      disp[ti]!.y += (dy / d) * f
+      const f = (d * d) / (k * 1.4)
+      dispX[ia]! -= (dx / d) * f
+      dispY[ia]! -= (dy / d) * f
+      dispX[ib]! += (dx / d) * f
+      dispY[ib]! += (dy / d) * f
     }
     for (let i = 0; i < n; i++) {
       const node = nodes[i]!
-      const dx = node.x - width / 2
-      const dy = node.y - height / 2
-      disp[i]!.x -= dx * 0.035
-      disp[i]!.y -= dy * 0.035
-      const d = Math.max(Math.sqrt(disp[i]!.x * disp[i]!.x + disp[i]!.y * disp[i]!.y), 1)
-      const limit = Math.min(d, 30) * alpha
-      node.x += (disp[i]!.x / d) * limit
-      node.y += (disp[i]!.y / d) * limit
-      node.x = Math.max(30, Math.min(width - 30, node.x))
-      node.y = Math.max(26, Math.min(height - 26, node.y))
-    }
-    alpha *= 0.97
-  }
-}
-
-const MAX_GRAPH_NODES = 600
-
-
-function GraphView(props: { readonly cards: readonly EntityCard[]; readonly t: Translate; readonly runtime: KbRuntime; readonly kbId: string }): React.ReactElement {
-  const { cards, t, runtime, kbId } = props
-  const W = 920
-  const H = 640
-  /** 增量展开并入的节点/边（Neo4j Browser 模式：双击节点逐步展开全库）。 */
-  const [extra, setExtra] = useState<{ nodes: readonly { id: number; name: string; type: string; degree: number }[]; edges: readonly { s: number; t: number; type: string; weight: number; evidence: string }[] }>({ nodes: [], edges: [] })
-  const [expandedIds, setExpandedIds] = useState<ReadonlySet<number>>(new Set())
-  const [expanding, setExpanding] = useState(false)
-  const graph = useMemo(() => {
-    const built = buildGraph(cards)
-    const byId = new Map(built.nodes.map(n => [n.id, n] as const))
-    const edgeKeys = new Set(built.edges.map(e => e.key))
-    for (const n of extra.nodes) {
-      if (byId.has(n.id)) continue
-      byId.set(n.id, { id: n.id, key: `n${n.id}`, name: n.name, type: n.type, degree: n.degree, isCard: false, x: 0, y: 0 })
-    }
-    const nodes = [...byId.values()]
-    const edges = [...built.edges]
-    for (const e of extra.edges) {
-      const key = e.s < e.t ? `${e.s}|${e.t}|${e.type}` : `${e.t}|${e.s}|${e.type}`
-      if (edgeKeys.has(key)) continue
-      edgeKeys.add(key)
-      edges.push({ key, s: e.s, t: e.t, type: e.type, weight: e.weight, evidence: e.evidence })
-    }
-    return { nodes, edges }
-  }, [cards, extra])
-  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
-  useEffect(() => {
-    try {
-      const seed = new Map<string, { x: number; y: number }>()
-      for (const n of graph.nodes) {
-        const prev = positions.get(n.key)
-        if (prev !== undefined) seed.set(n.key, prev)
+      dispX[i]! -= (node.x - W / 2) * 0.04
+      dispY[i]! -= (node.y - H / 2) * 0.04
+      const d = Math.max(Math.sqrt(dispX[i]! * dispX[i]! + dispY[i]! * dispY[i]!), 1)
+      const limit = Math.min(d, 26) * alphaRef.current
+      const dragged = dragNode.current === node.id
+      if (!dragged) {
+        node.x += (dispX[i]! / d) * limit
+        node.y += (dispY[i]! / d) * limit
       }
-      simulate(graph.nodes as GraphNodeData[], graph.edges, W, H, positions.size === 0 ? 260 : 150, seed, pendingAnchor.current ?? undefined, positions.size === 0 ? 1 : 0.7)
-      pendingAnchor.current = null
-      setPositions(new Map(graph.nodes.map(n => [n.key, { x: n.x, y: n.y }] as const)))
-    } catch (err) {
-      // 布局失败不拖垮面板树：节点留在原位（0,0 的由 fit 视图兜底）
-      console.error('graph layout failed', err)
+      node.x = Math.max(14, Math.min(W - 14, node.x))
+      node.y = Math.max(14, Math.min(H - 14, node.y))
     }
-  }, [graph])
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
-  const [hover, setHover] = useState<string | null>(null)
-  const dragNode = useRef<{ key: string; moved: boolean } | null>(null)
-  const panState = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
-  const svgRef = useRef<SVGSVGElement | null>(null)
+    alphaRef.current *= 0.992
+  }
 
-
-
-  const connected = useMemo(() => {
-    if (hover === null) return null
-    const set = new Set<string>()
-    for (const e of graph.edges) {
-      if (`n${e.s}` === hover || `n${e.t}` === hover) { set.add(e.key); set.add(`n${e.s}`); set.add(`n${e.t}`) }
+  // ── 绘制 ──
+  const draw = (): void => {
+    const canvas = canvasRef.current
+    const wrap = wrapRef.current
+    if (canvas === null || wrap === null || data === null) return
+    const rect = wrap.getBoundingClientRect()
+    const W = Math.max(rect.width, 300)
+    const H = Math.max(rect.height, 300)
+    const dpr = window.devicePixelRatio || 1
+    if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+      canvas.width = Math.round(W * dpr)
+      canvas.height = Math.round(H * dpr)
+      canvas.style.width = `${W}px`
+      canvas.style.height = `${H}px`
     }
-    set.add(hover)
-    return set
-  }, [hover, graph])
+    const ctx = canvas.getContext('2d')
+    if (ctx === null) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    ctx.clearRect(0, 0, W, H)
+    ctx.save()
+    ctx.translate(view.x, view.y)
+    ctx.scale(view.k, view.k)
+    const ego = egoId
+    const egoSet = new Set<number>()
+    if (ego !== null) {
+      egoSet.add(ego)
+      for (const e of data.edges) {
+        if (e.s === ego || e.t === ego) { egoSet.add(e.s); egoSet.add(e.t) }
+      }
+    }
+    // 边
+    ctx.strokeStyle = 'rgba(120,130,145,0.5)'
+    ctx.lineWidth = 1 / view.k
+    ctx.beginPath()
+    for (const e of data.edges) {
+      const a = byIdMap(data.nodes).get(e.s)
+      const b = byIdMap(data.nodes).get(e.t)
+      if (a === undefined || b === undefined) continue
+      if (ego !== null && !egoSet.has(e.s)) continue
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+    }
+    ctx.stroke()
+    // 箭头（抽样绘制，全部绘制在低缩放时不可辨）
+    if (view.k > 0.8) {
+      ctx.fillStyle = 'rgba(140,150,165,0.7)'
+      for (const e of data.edges) {
+        const a = byIdMap(data.nodes).get(e.s)
+        const b = byIdMap(data.nodes).get(e.t)
+        if (a === undefined || b === undefined) continue
+        if (ego !== null && !egoSet.has(e.s)) continue
+        const dx = b.x - a.x
+        const dy = b.y - a.y
+        const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
+        const ux = dx / d
+        const uy = dy / d
+        const rB = nodeR(b)
+        const ax = b.x - ux * (rB + 2)
+        const ay = b.y - uy * (rB + 2)
+        ctx.beginPath()
+        ctx.moveTo(ax, ay)
+        ctx.lineTo(ax - ux * 5 - uy * 2.4, ay - uy * 5 + ux * 2.4)
+        ctx.lineTo(ax - ux * 5 + uy * 2.4, ay - uy * 5 - ux * 2.4)
+        ctx.closePath()
+        ctx.fill()
+      }
+    }
+    // 节点（按类型分批填充）
+    const byType = new Map<string, number[]>()
+    data.nodes.forEach((node, i) => {
+      let list = byType.get(node.type)
+      if (list === undefined) { list = []; byType.set(node.type, list) }
+      list.push(i)
+    })
+    for (const [type, idxs] of byType) {
+      ctx.fillStyle = typeColor(type)
+      ctx.beginPath()
+      for (const i of idxs) {
+        const node = data.nodes[i]!
+        if (ego !== null && !egoSet.has(node.id)) continue
+        const r = nodeR(node)
+        ctx.moveTo(node.x + r, node.y)
+        ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+      }
+      ctx.fill()
+    }
+    // 标签（LOD：缩放足够或度数高或悬停/ego 时绘制）
+    ctx.font = '10px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    const labelAlpha = Math.max(0, Math.min(1, (view.k - 0.55) / 0.5))
+    for (const node of data.nodes) {
+      if (ego !== null && !egoSet.has(node.id)) continue
+      const isHot = hoverId === node.id
+      const show = isHot || ego === node.id || node.degree >= 8 || labelAlpha > 0.3
+      if (!show) continue
+      ctx.fillStyle = isHot ? '#ffffff' : 'rgba(215,220,226,0.92)'
+      ctx.fillText(node.name.length > 16 ? `${node.name.slice(0, 15)}…` : node.name, node.x, node.y + nodeR(node) + 11)
+    }
+    ctx.restore()
+  }
 
-  const toGraph = (clientX: number, clientY: number): { x: number; y: number } => {
-    const rect = svgRef.current?.getBoundingClientRect()
+  // ── 动画循环 ──
+  useEffect(() => {
+    const tick = (): void => {
+      layoutStep()
+      draw()
+      rafRef.current = requestAnimationFrame(tick)
+    }
+    rafRef.current = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(rafRef.current)
+  })
+
+  const nodeR = (n: { degree: number }): number => 4 + Math.min(12, Math.sqrt(n.degree) * 1.7)
+  function radius0(W: number, H: number): number {
+    return Math.min(W, H) * 0.38
+  }
+  function byIdMap(nodes: readonly { id: number; x: number; y: number }[]): Map<number, { x: number; y: number }> {
+    const m = new Map<number, { x: number; y: number }>()
+    for (const n of nodes) m.set(n.id, n)
+    return m
+  }
+  function nodeR2(n: { degree: number }): number {
+    return nodeR(n)
+  }
+  // 四叉树实现（模块级函数声明在组件外）
+
+  const toCanvas = (clientX: number, clientY: number): { x: number; y: number } => {
+    const rect = canvasRef.current?.getBoundingClientRect()
     if (rect === undefined || rect === null) return { x: 0, y: 0 }
-    const sx = ((clientX - rect.left) / rect.width) * W
-    const sy = ((clientY - rect.top) / rect.height) * H
-    return { x: (sx - view.x) / view.k, y: (sy - view.y) / view.k }
+    return { x: ((clientX - rect.left) - view.x) / view.k, y: ((clientY - rect.top) - view.y) / view.k }
   }
 
-  const expandNode = (nodeId: number, anchor: { x: number; y: number } | undefined): void => {
-    if (expanding || expandedIds.has(nodeId)) return
-    if (graph.nodes.length >= MAX_GRAPH_NODES) {
-      runtime.pushNotice(t('graphLimit', { limit: MAX_GRAPH_NODES }))
-      return
+  const pickNode = (cx: number, cy: number): number | null => {
+    if (data === null) return null
+    let best: number | null = null
+    let bestD = Infinity
+    for (const node of data.nodes) {
+      const dx = node.x - cx
+      const dy = node.y - cy
+      const d = Math.sqrt(dx * dx + dy * dy)
+      if (d < nodeR(node) + 4 && d < bestD) { best = node.id; bestD = d }
     }
-    setExpanding(true)
-    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'expand', { id: kbId, nodeId }))
-      .then((v) => {
-        const r = v as { neighbors: readonly { id: number; name: string; type: string; degree: number }[]; edges: readonly { s: number; t: number; type: string; weight: number; evidence: string }[] }
-        setExtra(prev => ({
-          nodes: [...prev.nodes, ...r.neighbors],
-          edges: [...prev.edges, ...r.edges],
-        }))
-        setExpandedIds(prev => new Set(prev).add(nodeId))
-      })
-      .catch(err => runtime.pushNotice(String(err)))
-      .finally(() => setExpanding(false))
+    return best
   }
-  const nodeRadius = (n: GraphNodeData): number => 5 + Math.min(11, Math.sqrt(n.degree) * 1.6) + (n.isCard ? 1.5 : 0)
-  const typesUsed = useMemo(() => {
-    const set = new Map<string, number>()
-    for (const n of graph.nodes) set.set(n.type, (set.get(n.type) ?? 0) + 1)
-    return [...set.entries()].sort((a, b) => b[1] - a[1])
-  }, [graph])
 
-  if (cards.length === 0) {
-    return (
-      <div className='gv-graph'>
-        <div className='gv-empty'>{t('noEntities')}</div>
-      </div>
-    )
+  const typesUsed = useMemo(() => {
+    if (data === null) return []
+    const set = new Map<string, number>()
+    for (const n of data.nodes) set.set(n.type, (set.get(n.type) ?? 0) + 1)
+    return [...set.entries()].sort((a, b) => b[1] - a[1])
+  }, [data])
+
+  if (loadErr !== null) {
+    return <div className='gv-graph'><div className='gv-empty'>{t('loadFailed')}: {loadErr}</div></div>
+  }
+  if (data === null) {
+    return <div className='gv-graph'><div className='gv-empty'>{t('loading')}</div></div>
   }
 
   return (
-    <div className='gv-graph'>
+    <div className='gv-graph' ref={wrapRef}>
       <div className='gv-graph-head'>
         <span className='gv-name'>{t('graphTitle')}</span>
-        <span className='gv-badge'>{t('graphCounts', { nodes: graph.nodes.length, edges: graph.edges.length })}</span>
+        <span className='gv-badge'>{t('graphCounts', { nodes: data.nodes.length, edges: data.edges.length })}</span>
+        {egoId !== null && <button className='gv-btn' style={{ padding: '1px 8px' }} onClick={() => setEgoId(null)}>{t('graphClearEgo')}</button>}
       </div>
       <div className='gv-legend'>
         {typesUsed.map(([type, count]) => (
           <span key={type} title={type}><i style={{ background: typeColor(type) }} />{type} {count}</span>
         ))}
       </div>
-      <svg
-        ref={svgRef}
-        viewBox={`0 0 ${W} ${H}`}
+      <canvas
+        ref={canvasRef}
+        style={{ cursor: hoverId !== null ? 'pointer' : 'grab' }}
         onWheel={e => {
-          e.preventDefault()
           const factor = e.deltaY > 0 ? 0.9 : 1.1
           setView(v => {
-            const k = Math.max(0.35, Math.min(3, v.k * factor))
-            const rect = svgRef.current?.getBoundingClientRect()
+            const k = Math.max(0.08, Math.min(4, v.k * factor))
+            const rect = canvasRef.current?.getBoundingClientRect()
             if (rect === undefined || rect === null) return { ...v, k }
-            const cx = ((e.clientX - rect.left) / rect.width) * W
-            const cy = ((e.clientY - rect.top) / rect.height) * H
+            const cx = e.clientX - rect.left
+            const cy = e.clientY - rect.top
             return { k, x: cx - ((cx - v.x) * k) / v.k, y: cy - ((cy - v.y) * k) / v.k }
           })
         }}
         onPointerDown={e => {
-          if ((e.target as Element).tagName === 'circle' || (e.target as Element).tagName === 'text') return
-          panState.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
+          const p = toCanvas(e.clientX, e.clientY)
+          const hit = pickNode(p.x, p.y)
+          if (hit !== null) {
+            dragNode.current = hit
+          } else {
+            panState.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
+          }
           ;(e.target as Element).setPointerCapture?.(e.pointerId)
         }}
         onPointerMove={e => {
           const pan = panState.current
           if (pan !== null) {
-            const rect = svgRef.current?.getBoundingClientRect()
+            const rect = canvasRef.current?.getBoundingClientRect()
             if (rect === undefined || rect === null) return
-            setView(v => ({ ...v, x: pan.ox + ((e.clientX - pan.sx) / rect.width) * W, y: pan.oy + ((e.clientY - pan.sy) / rect.height) * H }))
+            setView(v => ({ ...v, x: pan.ox + (e.clientX - pan.sx), y: pan.oy + (e.clientY - pan.sy) }))
             return
           }
+          const p = toCanvas(e.clientX, e.clientY)
           const drag = dragNode.current
-          if (drag === null) return
-          const p = toGraph(e.clientX, e.clientY)
-          setPositions(prev => new Map(prev).set(drag.key, p))
+          if (drag !== null) {
+            const node = data?.nodes.find(x => x.id === drag)
+            if (node !== undefined) { node.x = p.x; node.y = p.y }
+            return
+          }
+          const hit = pickNode(p.x, p.y)
+          setHoverId(prev => (prev === hit ? prev : hit))
+          if (hit !== null) {
+            const node = data?.nodes.find(x => x.id === hit)
+            if (node !== undefined) setHoverTip({ x: e.clientX - (canvasRef.current?.getBoundingClientRect().left ?? 0), y: e.clientY - (canvasRef.current?.getBoundingClientRect().top ?? 0), text: `${node.name}（${node.type}，deg ${node.degree}）` })
+          } else setHoverTip(null)
         }}
-        onPointerUp={() => { panState.current = null; dragNode.current = null }}
-        onPointerLeave={() => { panState.current = null; dragNode.current = null }}
-      >
-        <defs>
-          <marker id='gv-arrow' viewBox='0 0 10 10' refX='11' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
-            <path d='M 0 0 L 10 5 L 0 10 z' fill='#8f98a8' />
-          </marker>
-        </defs>
-        <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
-          {graph.edges.map(e => {
-            const sp = positions.get(`n${e.s}`)
-            const tp = positions.get(`n${e.t}`)
-            if (sp === undefined || tp === undefined) return null
-            const dim = connected !== null && !connected.has(e.key)
-            const hot = hover !== null && connected !== null && connected.has(e.key)
-            const mx = (sp.x + tp.x) / 2
-            const my = (sp.y + tp.y) / 2
-            return (
-              <g key={e.key} opacity={dim ? 0.08 : 1}>
-                <line x1={sp.x} y1={sp.y} x2={tp.x} y2={tp.y} stroke='#5b6472' strokeWidth={hot ? 2 : Math.min(1 + e.weight * 0.4, 3)} marker-end='url(#gv-arrow)'>
-                  <title>{`${e.type} w=${e.weight}${e.evidence !== '' ? ` · ${e.evidence}` : ''}`}</title>
-                </line>
-                <text x={mx} y={my - 3} fontSize={9} fill='#9aa3ad' textAnchor='middle' opacity={hot ? 1 : 0.55}>
-                  {`${e.type}${e.weight > 1 ? `·w${e.weight}` : ''}`}
-                  <title>{`${e.type} w=${e.weight}${e.evidence !== '' ? ` · ${e.evidence}` : ''}`}</title>
-                </text>
-              </g>
-            )
-          })}
-          {graph.nodes.map(n => {
-            const p = positions.get(n.key)
-            if (p === undefined) return null
-            const r = nodeRadius(n)
-            const dim = connected !== null && !connected.has(n.key)
-            return (
-              <g key={n.key} opacity={dim ? 0.15 : 1}
-                onPointerDown={e => {
-                  e.stopPropagation()
-                  dragNode.current = { key: n.key }
-                  ;(e.target as Element).setPointerCapture?.(e.pointerId)
-                }}
-                onPointerUp={e => {
-                  e.stopPropagation()
-                  if (dragNode.current !== null) {
-                    const card = cards.find(c => c.id === n.id)
-                    if (card !== undefined && n.isCard) {
-                      document.getElementById(`gv-card-${n.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-                    }
-                  }
-                  dragNode.current = null
-                }}
-                onPointerEnter={() => setHover(n.key)}
-                onPointerLeave={() => setHover(null)}
-                style={{ cursor: 'pointer' }}
-              >
-                <circle cx={p.x} cy={p.y} r={r} fill={typeColor(n.type)} stroke={n.isCard ? '#ffffff55' : 'none'} strokeWidth={n.isCard ? 1.5 : 0}>
-                  <title>{`${n.name}（${n.type}，deg ${n.degree}）`}</title>
-                </circle>
-                <text x={p.x} y={p.y + r + 11} fontSize={10.5} fill='#d5dae2' textAnchor='middle'>
-                  {n.name.length > 14 ? `${n.name.slice(0, 13)}…` : n.name}
-                  <title>{n.name}</title>
-                </text>
-              </g>
-            )
-          })}
-        </g>
-      </svg>
+        onPointerUp={e => {
+          const p = toCanvas(e.clientX, e.clientY)
+          const drag = dragNode.current
+          if (drag !== null) {
+            const moved = pickNode(p.x, p.y) === drag
+            if (!moved) {
+              // 单击节点：ego 高亮（再点取消）
+              setEgoId(prev => (prev === drag ? null : drag))
+            }
+          }
+          dragNode.current = null
+          panState.current = null
+        }}
+        onPointerLeave={() => { dragNode.current = null; panState.current = null; setHoverTip(null) }}
+        onDoubleClick={e => {
+          const p = toCanvas(e.clientX, e.clientY)
+          const hit = pickNode(p.x, p.y)
+          if (hit !== null) setEgoId(prev => (prev === hit ? null : hit))
+        }}
+      />
+      {hoverTip !== null && (
+        <div className='gv-graph-tip' style={{ left: hoverTip.x + 12, top: hoverTip.y + 8 }}>{hoverTip.text}</div>
+      )}
       <div className='gv-graph-hint'>{t('graphHint')}</div>
     </div>
   )
 }
+
+// ── Barnes-Hut 四叉树（模块级）──────────────────────────────────────────────
+const BH_THETA = 0.9
+function applyBH(root: QuadNode, node: { x: number; y: number }, k: number, dispX: Float64Array, dispY: Float64Array, selfIdx: number): void {
+  const stack: QuadNode[] = [root]
+  while (stack.length > 0) {
+    const q = stack.pop()!
+    if (q.mass === 0) continue
+    const dx = q.cx - node.x
+    const dy = q.cy - node.y
+    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
+    const isLeafItem = q.itemIdx >= 0
+    if (isLeafItem && q.itemIdx === selfIdx) continue
+    if (isLeafItem || ((q.x1 - q.x0) / d) < BH_THETA) {
+      const f = (k * k * q.mass) / (d * d)
+      dispX[selfIdx]! += (dx / d) * f
+      dispY[selfIdx]! += (dy / d) * f
+    } else {
+      for (const c of q.child) if (c !== null) stack.push(c)
+    }
+  }
+}
+
+// ── Barnes-Hut 四叉树（模块级）──────────────────────────────────────────────
+interface QuadNode {
+  x0: number; y0: number; x1: number; y1: number
+  mass: number
+  cx: number; cy: number
+  child: [QuadNode | null, QuadNode | null, QuadNode | null, QuadNode | null]
+  itemIdx: number
+}
+function buildQuad(x0: number, y0: number, x1: number, y1: number): QuadNode {
+  return { x0, y0, x1, y1, mass: 0, cx: 0, cy: 0, child: [null, null, null, null], itemIdx: -1 }
+}
+function quadInsert(q: QuadNode, item: { x: number; y: number }, idx: number): void {
+  if (item.x < q.x0 || item.x > q.x1 || item.y < q.y0 || item.y > q.y1) return
+  if (q.itemIdx === -1 && q.mass === 0) { q.itemIdx = idx; q.mass = 1; q.cx = item.x; q.cy = item.y; return }
+  if (q.itemIdx >= 0) {
+    const held = q.itemIdx
+    q.itemIdx = -1
+    quadInsertChild(q, q.cx, q.cy, held)
+  }
+  q.mass += 1
+  q.cx = (q.cx * (q.mass - 1) + item.x) / q.mass
+  q.cy = (q.cy * (q.mass - 1) + item.y) / q.mass
+  quadInsertChild(q, item.x, item.y, idx)
+}
+function quadInsertChild(q: QuadNode, x: number, y: number, idx: number): void {
+  const mx = (q.x0 + q.x1) / 2
+  const my = (q.y0 + q.y1) / 2
+  const i = (x >= mx ? 1 : 0) + (y >= my ? 2 : 0)
+  let c = q.child[i] ?? null
+  if (c === null) {
+    const x0 = i % 2 === 0 ? q.x0 : mx
+    const x1 = i % 2 === 0 ? mx : q.x1
+    const y0 = i < 2 ? q.y0 : my
+    const y1 = i < 2 ? my : q.y1
+    c = buildQuad(x0, y0, x1, y1)
+    q.child[i] = c
+  }
+  quadInsert(c, { x, y }, idx)
+}
+
 
 
 function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string }): React.ReactElement {

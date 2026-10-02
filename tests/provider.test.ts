@@ -45,6 +45,7 @@ describe('GraphRagServiceImpl', () => {
     importDirectory: () => ({ imported: 0, skipped: [], started: false }),
     changesPreview: () => ({ added: 0, changed: [], removed: [] }),
     expandNode: () => ({ node: null, neighbors: [], edges: [] }),
+    graphAll: () => ({ nodes: [], edges: [] }),
     reviewRelation: () => ({ excluded: false, corrected: false }),
     healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
   })
