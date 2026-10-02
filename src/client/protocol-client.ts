@@ -28,6 +28,37 @@ export interface LocaleService {
   bind(namespace: string): (key: string, params?: Record<string, unknown>) => string
 }
 
+/** 宿主输入壳（sessions.scope(id).conversation.input.for(actx)）：
+ * setDraft 写草稿 → submit 提交（顺序不可颠倒）。
+ */
+export interface InputShell {
+  setDraft?(text: string): void
+  submit?(mode?: unknown): void
+}
+
+/** 会话服务面（`@deepseek-ai/dsh-api-session-controller` 注入；软探测）。
+ * retainAgentScope 同步物化会话作用域（scope() 只读不建），返回引用用完
+ * release()，引用计数归零后作用域退出。
+ */
+export interface SessionsService {
+  readonly list?: { getSnapshot?(): { current?: string } }
+  create?(opts?: { cwd?: string }): Promise<string>
+  open?(id: string): void
+  retainAgentScope?(id: string): { release?(): void }
+  scope?(id: string): (Record<string, unknown> & {
+    conversation?: { input?: { for?(carrier: unknown): InputShell } }
+  }) | undefined
+}
+
+/** ui-workspace 客户端服务（`@deepseek-ai/dsh-client-ui-workspace` 注入）：
+ * 宿主 OS 目录选择器 + 会话/工作区导航（软探测）。
+ */
+export interface UiWorkspaceService {
+  pickDirectory?(): Promise<string | null>
+  openSession?(target: string): void
+  openWorkspace?(target: string): unknown
+}
+
 export interface ConnectionService {
   rpc?: {
     call(channel: string, endpoint: string, payload: unknown): Promise<unknown>
@@ -42,6 +73,8 @@ export interface ClientContext {
   readonly slots?: SlotsService
   readonly connection?: ConnectionService
   readonly locale?: LocaleService
+  readonly sessions?: SessionsService
+  readonly uiWorkspace?: UiWorkspaceService
   readonly layout?: LayoutService
   /** 注册生命周期清理（client 侧 cordis ctx）。 */
   effect(disposer: () => unknown, label?: string): unknown

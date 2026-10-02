@@ -1,15 +1,21 @@
 /** 知识库管理视图（0207 §3.1 管理页 + §3.2 进度）：KB 卡片列表 + 新建表单
  * + 每库操作（索引/取消/删除）。受控组件保持最小状态，数据经 runtime 快照。
+ * 目录选择与 agent 代建经宿主桥（bridge.ts），服务缺席逐级降级。
  */
 
 import { useEffect, useSyncExternalStore, useState } from 'react'
 import { BrowseReviewView } from './browse-review.tsx'
 
+import type { HostBridge } from './bridge.ts'
 import type { KbView } from './protocol.ts'
 import { sortKbs, type KbRuntime, type Translate } from './runtime.ts'
 
-export function KbManagerView(props: { readonly runtime: KbRuntime; readonly t: Translate }): React.ReactElement {
-  const { runtime, t } = props
+export function KbManagerView(props: {
+  readonly runtime: KbRuntime
+  readonly t: Translate
+  readonly bridge: HostBridge
+}): React.ReactElement {
+  const { runtime, t, bridge } = props
   const state = useSyncExternalStore(runtime.source.subscribe, runtime.source.getSnapshot)
   const notice = useSyncExternalStore(runtime.notice.subscribe, runtime.notice.getSnapshot)
 
@@ -18,6 +24,13 @@ export function KbManagerView(props: { readonly runtime: KbRuntime; readonly t: 
   const [formOpen, setFormOpen] = useState(false)
 
   const kbs = state.snapshot ? sortKbs(state.snapshot.kbs) : []
+
+  const delegateExplore = (): void => {
+    void bridge.delegate(t('agentExplorePrompt')).then(result => {
+      runtime.pushNotice(t(`delegate${result.charAt(0).toUpperCase()}${result.slice(1)}`))
+      if (result !== 'none') setFormOpen(false)
+    })
+  }
 
   return (
     <div className='gv-panel'>
@@ -35,38 +48,79 @@ export function KbManagerView(props: { readonly runtime: KbRuntime; readonly t: 
       )}
 
       {state.phase === 'error' && <div className='gv-error'>{t('loadFailed')}: {state.error}</div>}
-      {formOpen && <CreateForm runtime={runtime} t={t} onDone={() => setFormOpen(false)} />}
+      {formOpen && <CreateForm runtime={runtime} t={t} bridge={bridge} onDone={() => setFormOpen(false)} />}
 
-      {state.phase === 'ready' && kbs.length === 0 && <div className='gv-empty'>{t('empty')}</div>}
+      {state.phase === 'ready' && kbs.length === 0 && !formOpen && (
+        <div className='gv-empty'>
+          {t('empty')}
+          <div style={{ marginTop: 10 }}>
+            <button className='gv-btn' onClick={delegateExplore}>{t('agentDelegateEmpty')}</button>
+          </div>
+        </div>
+      )}
 
       {kbs.map(kb => <KbCard key={kb.id} kb={kb} runtime={runtime} t={t} />)}
     </div>
   )
 }
 
-function CreateForm(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly onDone: () => void }): React.ReactElement {
-  const { runtime, t, onDone } = props
+function CreateForm(props: {
+  readonly runtime: KbRuntime
+  readonly t: Translate
+  readonly bridge: HostBridge
+  readonly onDone: () => void
+}): React.ReactElement {
+  const { runtime, t, bridge, onDone } = props
   const [name, setName] = useState('')
   const [rootsText, setRootsText] = useState('')
   const [description, setDescription] = useState('')
+  const [picking, setPicking] = useState(false)
+
+  const rootsOf = (): string[] => rootsText.split('\n').map(line => line.trim()).filter(line => line !== '')
+
+  const pick = (): void => {
+    setPicking(true)
+    void bridge.pickDirectory()
+      .then(dir => {
+        if (dir !== null && !rootsOf().includes(dir)) {
+          setRootsText(text => text.trim() === '' ? dir : `${text.trimEnd()}\n${dir}`)
+        }
+      })
+      .catch(() => runtime.pushNotice(t('pickUnavailable')))
+      .finally(() => setPicking(false))
+  }
 
   const submit = (): void => {
-    const roots = rootsText.split('\n').map(line => line.trim()).filter(line => line !== '')
+    const roots = rootsOf()
     if (name.trim() === '' || roots.length === 0) return
     void runtime.create({ name: name.trim(), roots, description: description.trim() !== '' ? description.trim() : undefined })
       .then(onDone)
+  }
+
+  const delegate = (): void => {
+    const roots = rootsOf()
+    if (roots.length === 0) { runtime.pushNotice(t('delegateRootsRequired')); return }
+    const prompt = t('agentCreatePrompt', { name: name.trim() !== '' ? name.trim() : roots[0], roots: roots.map(r => `- ${r}`).join('\n') })
+    void bridge.delegate(prompt).then(result => {
+      runtime.pushNotice(t(`delegate${result.charAt(0).toUpperCase()}${result.slice(1)}`))
+      if (result !== 'none') onDone()
+    })
   }
 
   return (
     <div className='gv-form'>
       <label>{t('formName')}</label>
       <input value={name} onChange={e => setName(e.target.value)} placeholder={t('formNameHint')} />
-      <label>{t('formRoots')}</label>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, margin: '8px 0 4px' }}>
+        <span style={{ fontSize: 12, color: 'var(--gv-fg-secondary, var(--dsw-alias-label-secondary, #5a6472))' }}>{t('formRoots')}</span>
+        <button className='gv-btn' disabled={picking} onClick={pick}>{picking ? '…' : t('pickDir')}</button>
+      </div>
       <textarea value={rootsText} onChange={e => setRootsText(e.target.value)} placeholder={t('formRootsHint')} />
       <label>{t('formDesc')}</label>
       <input value={description} onChange={e => setDescription(e.target.value)} placeholder={t('formDescHint')} />
       <div className='gv-actions'>
         <button className='gv-btn gv-btn-primary' disabled={name.trim() === '' || rootsText.trim() === ''} onClick={submit}>{t('create')}</button>
+        <button className='gv-btn' disabled={rootsText.trim() === ''} onClick={delegate}>{t('agentDelegate')}</button>
         <button className='gv-btn' onClick={onDone}>{t('cancel')}</button>
       </div>
     </div>

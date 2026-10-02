@@ -72,6 +72,17 @@ export const zh = {
   healthNote: '覆盖率为已索引/受扫文件比；抽样精确率来自“准确性抽查”的人工判定；标记错误的关系不再参与检索。',
   explore: '浏览 / 审查',
   closeExplore: '收起',
+  pickDir: '选择目录',
+  pickUnavailable: '当前环境没有可用的目录选择器，请在下方手动输入绝对路径',
+  agentDelegate: 'Agent 代建',
+  agentDelegateHint: '没有合适目录？让 agent 扫描当前工作区并征求你确认后再建库',
+  agentDelegateEmpty: '让 Agent 代建',
+  agentCreatePrompt: '请创建知识图谱知识库并完成索引。\n- 名称：{name}\n- 授权目录（只索引这些目录）\n{roots}\n- 步骤：调用 graphrag_index（kb=「{name}」、create=true、roots=上述目录）；出现审批卡时向我确认。\n- 验收：用 graphrag_status 确认已索引文件 > 0，并报告实体/关系/社区数量与隔离数。\n- 停止：status 报告完成即停止，不要做其他事，不要修改任何文件。',
+  agentExplorePrompt: '请为当前工作区创建知识图谱知识库：先查看工作区目录结构，挑选值得索引的目录（源码/文档；排除依赖目录、构建产物、.git），把候选清单和理由告诉我并等我确认；我确认后再调用 graphrag_index（kb + create=true）建库并索引，完成后用 graphrag_status 报告规模（实体/关系/社区/隔离数）。出现审批卡时向我说明内容再请求批准。',
+  delegateSubmitted: '已交给会话中的 agent 执行，请回到对话跟进审批与结果',
+  delegateCopied: '提示词已复制到剪贴板——请粘贴到会话发送',
+  delegateNone: '无法投递到会话（剪贴板也不可用）',
+  delegateRootsRequired: '请先选择或填写至少一个授权目录',
 } as const
 
 export type DictKey = keyof typeof zh
@@ -143,6 +154,17 @@ export const en: Record<DictKey, string> = {
   healthNote: 'Coverage = indexed / scanned files; sample precision comes from human verdicts in Accuracy Review; wrong-marked relations are excluded from retrieval.',
   explore: 'Browse / Review',
   closeExplore: 'Collapse',
+  pickDir: 'Pick directory',
+  pickUnavailable: 'No directory picker is available here — type an absolute path below instead',
+  agentDelegate: 'Agent builds it',
+  agentDelegateHint: 'No directory at hand? Let an agent scan the current workspace and confirm with you before indexing',
+  agentDelegateEmpty: 'Let Agent build it',
+  agentCreatePrompt: 'Create a knowledge-graph knowledge base and index it.\n- Name: {name}\n- Authorized directories (index only these):\n{roots}\n- Steps: call graphrag_index (kb="{name}", create=true, roots=the directories above); when an approval card appears, confirm with me.\n- Acceptance: use graphrag_status to confirm files indexed > 0, then report entities/relations/communities and quarantined count.\n- Stop: stop right after the status report; do nothing else and modify no files.',
+  agentExplorePrompt: 'Create a knowledge-graph knowledge base for the current workspace: first inspect the workspace structure, pick directories worth indexing (source/docs; exclude dependency dirs, build output, .git), show me the candidate list with reasons and wait for my confirmation; after I confirm, call graphrag_index (kb + create=true) to build and index, then report the scale via graphrag_status (entities/relations/communities/quarantined). When an approval card appears, explain it before asking for my approval.',
+  delegateSubmitted: 'Handed to the agent in your conversation — follow up there for approval and results',
+  delegateCopied: 'Prompt copied to clipboard — paste it into the conversation',
+  delegateNone: 'Could not reach the conversation (clipboard unavailable too)',
+  delegateRootsRequired: 'Pick or type at least one authorized directory first',
 }
 
 export const dictionaries = { zh, en }
