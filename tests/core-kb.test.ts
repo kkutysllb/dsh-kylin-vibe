@@ -92,4 +92,29 @@ describe('migrateLegacyWorkspaces', () => {
       rmSync(dir, { recursive: true, force: true })
     }
   })
+
+})
+
+describe('KbRegistry 跨进程可见性', () => {
+  test('外部进程改写 kbs.json → mtime 变化触发重读', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'graphrag-kb-ext-'))
+    try {
+      const file = join(dir, 'kbs.json')
+      writeFileSync(file, JSON.stringify({ version: 1, kbs: [] }))
+      const r = KbRegistry.load(dir)
+      assert.equal(r.list().length, 0)
+      // 模拟另一宿主进程写入；同毫秒 mtime 可能不变，退避重写至可见
+      const external = { version: 1 as const, kbs: [{ id: 'ext', name: '外部库', roots: ['/x'], description: null, managed: 'user' as const, createdAt: 1, lastIndexedAt: null }] }
+      let seen = false
+      for (let i = 0; i < 20 && !seen; i++) {
+        await new Promise(resolve => { setTimeout(resolve, 15) })
+        external.kbs[0]!.createdAt += i + 1
+        writeFileSync(file, JSON.stringify(external))
+        seen = r.list().some(k => k.id === 'ext')
+      }
+      assert.ok(seen, '外部写入的 KB 应对既有注册表可见')
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
 })

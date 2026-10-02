@@ -1,9 +1,9 @@
 /** 面板样式：注入一条 <style>（id 幂等），类名 `gv-` 前缀。
  *
  * 双层令牌：局部别名覆盖宿主设计平台令牌（`--dsw-alias-*`，automation
- * 同款），无令牌宿主回落字面量——双主题自适应。布局纪律（super-ppts §7）：
- * 壳层宽度与滚动归宿主，不自建侧边栏/固定栏/100vw/100vh；面板交由宿主
- * main 槽位容器约束，无自建高度。
+ * 同款），无令牌宿主回落字面量——双主题自适应。布局纪律（automation 同款）：
+ * 壳层宽度归宿主；滚动在面板内（0.2.0-rc.2 实测宿主 main 槽位
+ * `overflow: hidden` 定高，不滚动，面板必须自带 overflow-y）。
  */
 
 const STYLE_ID = 'ky-graphrag-styles'
@@ -29,7 +29,7 @@ const CSS = `
   --gv-primary-fg: var(--dsw-alias-label-primary-foreground, #ffffff);
   --gv-error: var(--dsw-alias-state-error-primary, #d0403d);
 }
-.gv-panel { padding: 16px 20px 32px; box-sizing: border-box; font-size: 13px; line-height: 1.5; color: var(--gv-fg); }
+.gv-panel { height: 100%; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 16px 20px 32px; box-sizing: border-box; font-size: 13px; line-height: 1.5; color: var(--gv-fg); }
 .gv-panel h2 { margin: 0 0 4px; font-size: 16px; color: var(--gv-fg); }
 .gv-sub { color: var(--gv-fg-secondary); margin: 0 0 12px; }
 .gv-notice { background: color-mix(in srgb, var(--gv-primary) 12%, transparent); border-radius: 8px; padding: 8px 12px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }

@@ -28,40 +28,63 @@ export function slugify(name: string): string {
 export class KbRegistry {
   private kbs: KnowledgeBase[]
   private readonly file: string
+  /** 装载/最近一次重读的文件 mtime；外部进程写入后据此重读。 */
+  private loadedMtimeMs: number
 
-  private constructor(file: string, kbs: KnowledgeBase[]) {
+  private constructor(file: string, kbs: KnowledgeBase[], loadedMtimeMs: number) {
     this.file = file
     this.kbs = kbs
+    this.loadedMtimeMs = loadedMtimeMs
   }
 
   static load(dataDir: string): KbRegistry {
     const file = join(dataDir, 'kbs.json')
-    if (!existsSync(file)) return new KbRegistry(file, [])
+    if (!existsSync(file)) return new KbRegistry(file, [], 0)
+    const mtime = statSync(file).mtimeMs
     const raw = JSON.parse(readFileSync(file, 'utf8')) as { version?: number; kbs?: KnowledgeBase[] }
     if (raw.version !== 1) throw new GraphRagError('SCHEMA_FUTURE', `kbs.json 版本 ${String(raw.version)} 高于实现`)
-    return new KbRegistry(file, raw.kbs ?? [])
+    return new KbRegistry(file, raw.kbs ?? [], mtime)
   }
 
   private save(): void {
     mkdirSync(join(this.file, '..'), { recursive: true })
     writeFileSync(this.file, JSON.stringify({ version: 1, kbs: this.kbs }, null, 2))
+    try { this.loadedMtimeMs = statSync(this.file).mtimeMs } catch { /* 写后 stat 失败无碍 */ }
+  }
+
+  /** 多宿主共享 dataDir（桌面 app + web host 并存）时，别的进程会写 kbs.json；
+   * mtime 变化即重读，避免外部建库/删库在本进程不可见。读失败保留内存态。 */
+  private refreshIfChanged(): void {
+    try {
+      const mtime = statSync(this.file).mtimeMs
+      if (mtime === this.loadedMtimeMs) return
+      const raw = JSON.parse(readFileSync(this.file, 'utf8')) as { version?: number; kbs?: KnowledgeBase[] }
+      if (raw.version === 1) {
+        this.kbs = raw.kbs ?? []
+        this.loadedMtimeMs = mtime
+      }
+    } catch { /* 文件暂不可读/被并发替换：保留内存态，下次再试 */ }
   }
 
   list(): readonly KnowledgeBase[] {
+    this.refreshIfChanged()
     return this.kbs
   }
 
   byId(id: string): KnowledgeBase | undefined {
+    this.refreshIfChanged()
     return this.kbs.find(k => k.id === id)
   }
 
   byName(name: string): KnowledgeBase | undefined {
+    this.refreshIfChanged()
     const key = normName(name)
     return this.kbs.find(k => normName(k.name) === key)
   }
 
   /** cwd（realpath 后）落在唯一 KB 的某 root 内 → 该 KB；零/多命中 → undefined。 */
   byCwd(cwdReal: string): KnowledgeBase | undefined {
+    this.refreshIfChanged()
     const hits = this.kbs.filter(k => k.roots.some(r => cwdReal === r || cwdReal.startsWith(`${r}/`)))
     return hits.length === 1 ? hits[0] : undefined
   }
