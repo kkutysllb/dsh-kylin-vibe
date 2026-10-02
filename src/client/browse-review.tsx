@@ -24,7 +24,6 @@ export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly 
         {tabs.map(x => (
           <button key={x.kind} className={tab === x.kind ? 'gv-btn gv-tab-active' : 'gv-btn'} onClick={() => setTab(x.kind)}>{x.label}</button>
         ))}
-        <button className='gv-btn' onClick={() => setTab('browse')}>{/* spacer no-op */ ''}</button>
       </div>
       {tab === 'browse' && <BrowseTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'review' && <ReviewTab runtime={runtime} t={t} kbId={kbId} />}
