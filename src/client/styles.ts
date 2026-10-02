@@ -69,9 +69,11 @@ const CSS = `
 .gv-md { max-height: 420px; overflow-y: auto; font-size: 12px; }
 .gv-selchip { position: fixed; z-index: 90; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
 .gv-pre { background: var(--gv-fill); border-radius: 8px; padding: 8px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--gv-fg); }
-.gv-split { display: flex; gap: 12px; align-items: flex-start; }
+.gv-split { display: flex; gap: 6px; align-items: flex-start; }
 .gv-split-left { flex: 1 1 0; min-width: 0; }
-.gv-split-right { flex: 0 0 44%; min-width: 300px; position: sticky; top: 0; }
+.gv-split-divider { flex: 0 0 6px; align-self: stretch; cursor: col-resize; border-radius: 3px; background: transparent; touch-action: none; }
+.gv-split-divider:hover, .gv-split-divider[data-drag='1'] { background: var(--gv-fill); }
+.gv-split-right { flex: 0 0 44%; position: sticky; top: 0; min-width: 280px; }
 .gv-graph { border: 1px solid var(--gv-border); border-radius: 10px; background: rgba(127,127,127,.05); height: 78vh; max-height: 860px; min-height: 420px; position: relative; overflow: hidden; }
 .gv-graph svg { width: 100%; height: 100%; display: block; cursor: grab; }
 .gv-graph-head { position: absolute; top: 8px; left: 10px; right: 10px; display: flex; align-items: center; gap: 8px; z-index: 2; pointer-events: none; }

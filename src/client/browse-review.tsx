@@ -162,8 +162,41 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   }
   useEffect(() => { load('') }, [kbId])
 
+  // 两列宽度拖拽：右列百分比可调（记忆到 localStorage）
+  const [rightPct, setRightPct] = useState<number>(() => {
+    try {
+      const stored = Number(window.localStorage.getItem('gv-split-right-pct'))
+      if (Number.isFinite(stored) && stored >= 20 && stored <= 75) return stored
+    } catch { /* ignore */ }
+    return 44
+  })
+  const [dividerDrag, setDividerDrag] = useState(false)
+  const splitRef = useRef<HTMLDivElement | null>(null)
+  const rightPctRef = useRef(rightPct)
+  const dividerDown = (e: React.PointerEvent): void => {
+    e.preventDefault()
+    setDividerDrag(true)
+    rightPctRef.current = rightPct
+    ;(e.target as Element).setPointerCapture?.(e.pointerId)
+    document.body.style.userSelect = 'none'
+  }
+  const dividerMove = (e: React.PointerEvent): void => {
+    if (!dividerDrag) return
+    const rect = splitRef.current?.getBoundingClientRect()
+    if (rect === undefined || rect === null || rect.width === 0) return
+    const pct = Math.max(20, Math.min(75, ((rect.right - e.clientX) / rect.width) * 100))
+    rightPctRef.current = pct
+    setRightPct(pct)
+  }
+  const dividerUp = (): void => {
+    if (!dividerDrag) return
+    setDividerDrag(false)
+    document.body.style.userSelect = ''
+    try { window.localStorage.setItem('gv-split-right-pct', String(rightPctRef.current)) } catch { /* ignore */ }
+  }
+
   return (
-    <div className='gv-split'>
+    <div className='gv-split' ref={splitRef}>
       <div className='gv-split-left'>
         <div className='gv-search'>
           <input
@@ -201,7 +234,15 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
           </div>
         ))}
       </div>
-      <div className='gv-split-right'>
+      <div
+        className='gv-split-divider'
+        data-drag={dividerDrag ? '1' : '0'}
+        title={t('splitDrag')}
+        onPointerDown={dividerDown}
+        onPointerMove={dividerMove}
+        onPointerUp={dividerUp}
+      />
+      <div className='gv-split-right' style={{ flex: `0 0 ${rightPct}%` }}>
         <GraphView t={t} runtime={runtime} kbId={kbId} />
       </div>
     </div>
