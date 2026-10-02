@@ -249,7 +249,9 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   )
 }
 
-// ── 图谱视图（Neo4j 风格力导向图；数据全部来自真实浏览结果，非示意）────────
+// ── 图谱视图（全量力导向 Canvas；布局在世界坐标系展开，视口只是取景窗口）──
+// 性能契约：渲染循环只读 ref（滚轮/平移/悬停不触发 React 渲染），收敛后零绘制；
+// id→节点/邻接表随数据构建一次（O(1) 查表），杜绝每帧 O(E×N) 重建导致的冻结。
 
 const TYPE_COLORS: Record<string, string> = {
   module: '#4b7bec', file: '#a55eea', function: '#26de81', class: '#fd9644',
@@ -260,96 +262,248 @@ function typeColor(t: string): string {
   return TYPE_COLORS[t] ?? '#8892a0'
 }
 
-interface GraphNodeData {
+/** 布局理想间距（世界单位）：接触斥力的平衡距离。节点再多也按此摊开，靠缩放取景。 */
+const LAYOUT_K = 40
+/** 斥力在接触区（d<K）取线性斜率：d→0 时有限但持续推开，杜绝 FR 式坍缩结块。 */
+const CONTACT_F = 100
+/** Hooke 弹簧刚度与锚距（1.6K）：近拉远推，替代 d² 吸引（后者远场过强致坨缩）。 */
+const SPRING_STIFF = 0.05
+const SPRING_REST = LAYOUT_K * 1.6
+/** 向心系数：弱到只防弱连通分量漂散，不参与挤压。 */
+const GRAVITY = 0.003
+/** 每帧位移封顶（世界单位）与退火底限。 */
+const MOVE_CAP = 30
+const FOCUS_COLOR = '#4176e6'
+
+interface GNode {
   readonly id: number
-  readonly key: string
   readonly name: string
   readonly type: string
   readonly degree: number
-  readonly isCard: boolean
   x: number
   y: number
 }
-interface GraphEdgeData {
-  readonly key: string
+interface GEdge {
   readonly s: number
   readonly t: number
   readonly type: string
   readonly weight: number
-  readonly evidence: string
+}
+interface GraphIndex {
+  readonly byId: Map<number, GNode>
+  readonly adj: Map<number, readonly { readonly edge: GEdge; readonly other: number }[]>
+  readonly hubs: readonly GNode[]
 }
 
-/** 由浏览卡片构建节点/边：实体按 id 去重，关系按无向三元组去重
- * （同一关系会同时出现在两张卡的邻居表里）。 */
-/** Fruchterman-Reingold 简化实现：库仑斥力 + 弹簧 + 向心力，退火迭代。
- * seed：已有位置（增量展开时保持现布局）；anchor：未定位新节点的聚拢锚点。 */
-function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; readonly kbId: string }): React.ReactElement {
+/** 黄金角螺旋初始布点：按度数降序插入——枢纽居中、叶子外缘，确定性且均匀。 */
+function seedPositions(nodes: readonly GNode[]): void {
+  const order = [...nodes].sort((a, b) => b.degree - a.degree)
+  const golden = Math.PI * (3 - Math.sqrt(5))
+  order.forEach((node, i) => {
+    const r = LAYOUT_K * 0.62 * Math.sqrt(i + 0.6)
+    const th = i * golden
+    node.x = r * Math.cos(th)
+    node.y = r * Math.sin(th)
+  })
+}
+
+function distToSeg(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax
+  const dy = by - ay
+  const l2 = dx * dx + dy * dy
+  const u = l2 === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2))
+  return Math.hypot(px - (ax + u * dx), py - (ay + u * dy))
+}
+
+/** 导出仅供开发态 harness（真实规模数据渲染验证）与后续回归使用；面板内经 BrowseTab 引用。 */
+export function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; readonly kbId: string }): React.ReactElement {
   const { t, runtime, kbId } = props
   /** 全量图谱数据（与卡片头统计同源：节点=全部实体，边=全部关系）。 */
-  const [data, setData] = useState<{ nodes: { id: number; name: string; type: string; degree: number; x: number; y: number; vx: number; vy: number }[]; edges: { s: number; t: number; type: string; weight: number }[] } | null>(null)
+  const [data, setData] = useState<{ nodes: GNode[]; edges: GEdge[] } | null>(null)
   const [loadErr, setLoadErr] = useState<string | null>(null)
-  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
-  const [hoverId, setHoverId] = useState<number | null>(null)
-  const [egoId, setEgoId] = useState<number | null>(null)
+  const [selId, setSelId] = useState<number | null>(null)
+  const [selEdge, setSelEdge] = useState<number | null>(null)
+  const [hiddenTypes, setHiddenTypes] = useState<ReadonlySet<string>>(new Set())
   const [hoverTip, setHoverTip] = useState<{ x: number; y: number; text: string } | null>(null)
-  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const [layoutPaused, setLayoutPaused] = useState(false)
+  const [search, setSearch] = useState('')
+  const [canLocate, setCanLocate] = useState(false)
+
+  // 热路径（滚轮/平移/悬停/拖拽）只动 ref + 脏标记，不触发 React 渲染
   const wrapRef = useRef<HTMLDivElement | null>(null)
-  const dragNode = useRef<number | null>(null)
-  const panState = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
-  const alphaRef = useRef(1)
-  const rafRef = useRef<number>(0)
+  const canvasRef = useRef<HTMLCanvasElement | null>(null)
+  const dataRef = useRef<{ nodes: GNode[]; edges: GEdge[] } | null>(null)
+  const viewRef = useRef({ x: 0, y: 0, k: 1 })
+  const alphaRef = useRef(0)
+  const dirtyRef = useRef(true)
+  const pausedRef = useRef(false)
+  const userMovedRef = useRef(false)
+  const hoverNodeRef = useRef<number | null>(null)
+  const hoverEdgeRef = useRef<number | null>(null)
+  const selRef = useRef<number | null>(null)
+  const selEdgeRef = useRef<number | null>(null)
+  const hiddenRef = useRef<ReadonlySet<string>>(new Set())
+  const fgRef = useRef('#d7dce2')
+  const tipKeyRef = useRef('')
+  const frameRef = useRef(0)
+  const rafRef = useRef(0)
+  const dragRef = useRef<{ mode: 'idle' | 'press'; id: number | null; sx: number; sy: number; ox: number; oy: number; moved: boolean }>({ mode: 'idle', id: null, sx: 0, sy: 0, ox: 0, oy: 0, moved: false })
+
+  /** 查表：id→节点 / 邻接表 / 枢纽序（度数降序，远景只标前若干个）。 */
+  const index = useMemo<GraphIndex | null>(() => {
+    if (data === null) return null
+    const byId = new Map<number, GNode>()
+    for (const n of data.nodes) byId.set(n.id, n)
+    const adj = new Map<number, { edge: GEdge; other: number }[]>()
+    for (const e of data.edges) {
+      let la = adj.get(e.s)
+      if (la === undefined) { la = []; adj.set(e.s, la) }
+      let lb = adj.get(e.t)
+      if (lb === undefined) { lb = []; adj.set(e.t, lb) }
+      la.push({ edge: e, other: e.t })
+      lb.push({ edge: e, other: e.s })
+    }
+    const hubs = [...data.nodes].sort((a, b) => b.degree - a.degree)
+    return { byId, adj, hubs }
+  }, [data])
+  const indexRef = useRef<GraphIndex | null>(index)
+  indexRef.current = index
+
+  const applySel = (id: number | null): void => { selRef.current = id; setSelId(id); dirtyRef.current = true }
+  const applySelEdge = (i: number | null): void => { selEdgeRef.current = i; setSelEdge(i); dirtyRef.current = true }
+  const applyHidden = (next: ReadonlySet<string>): void => { hiddenRef.current = next; setHiddenTypes(next); dirtyRef.current = true }
 
   useEffect(() => {
+    let alive = true
     void unwrap(runtime.rpc.call(RPC_CHANNEL, 'graphAll', { id: kbId }))
       .then((v) => {
+        if (!alive) return
         const r = v as { nodes: { id: number; name: string; type: string; degree: number }[]; edges: { s: number; t: number; type: string; weight: number }[] }
-        setData({
-          nodes: r.nodes.map(n => ({ ...n, x: 0, y: 0, vx: 0, vy: 0 })),
-          edges: r.edges,
-        })
+        const nodes: GNode[] = r.nodes.map(n => ({ id: n.id, name: n.name, type: n.type, degree: n.degree, x: 0, y: 0 }))
+        const edges: GEdge[] = r.edges.map(e => ({ s: e.s, t: e.t, type: e.type, weight: e.weight }))
+        seedPositions(nodes)
+        dataRef.current = { nodes, edges }
+        setData(dataRef.current)
         alphaRef.current = 1
+        frameRef.current = 0
+        userMovedRef.current = false
+        applySel(null)
+        applySelEdge(null)
+        applyHidden(new Set())
       })
-      .catch(err => setLoadErr(String(err)))
+      .catch(err => { if (alive) setLoadErr(String(err)) })
+    return () => { alive = false }
   }, [kbId])
 
-  // ── Barnes-Hut 力导向（四叉树近似斥力，O(n log n) 扛全量）──
-  const layoutStep = (): void => {
-    if (data === null) return
-    const rect = wrapRef.current?.getBoundingClientRect()
-    const W = Math.max(rect?.width ?? 600, 300)
-    const H = Math.max(rect?.height ?? 400, 300)
-    const nodes = data.nodes
-    const n = nodes.length
-    if (n === 0) return
-    if (alphaRef.current <= 0.012) return
-    const k = Math.sqrt((W * H) / n) * 0.9
-    // 首帧：环形布点
-    if (nodes[0] !== undefined && nodes[0]!.x === 0 && nodes[0]!.y === 0 && nodes[n - 1]!.x === 0 && nodes[n - 1]!.y === 0) {
-      nodes.forEach((node, i) => {
-        const angle = (2 * Math.PI * i) / n
-        node.x = W / 2 + radius0(W, H) * Math.cos(angle)
-        node.y = H / 2 + radius0(W, H) * Math.sin(angle)
-      })
-    }
-    const indexBy = new Map<number, number>()
-    nodes.forEach((node, i) => indexBy.set(node.id, i))
-    // 四叉树
+  useEffect(() => {
+    if (selId === null) { setCanLocate(false); return }
+    setCanLocate(document.getElementById(`gv-card-${selId}`) !== null)
+  }, [selId])
+
+  /** 取景：全图包围盒适配视口。stick=true 表示用户主动（此后不再自动取景）。 */
+  const fitToView = (stick: boolean): void => {
+    const d = dataRef.current
+    const wrap = wrapRef.current
+    if (d === null || wrap === null || d.nodes.length === 0) return
+    const rect = wrap.getBoundingClientRect()
+    const W = Math.max(rect.width, 60)
+    const H = Math.max(rect.height, 60)
     let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let maxY = -Infinity
-    for (const node of nodes) {
-      if (node.x < minX) minX = node.x
-      if (node.y < minY) minY = node.y
-      if (node.x > maxX) maxX = node.x
-      if (node.y > maxY) maxY = node.y
+    for (const n of d.nodes) {
+      if (n.x < minX) minX = n.x
+      if (n.y < minY) minY = n.y
+      if (n.x > maxX) maxX = n.x
+      if (n.y > maxY) maxY = n.y
     }
-    const quad = buildQuad(minX, minY, maxX, maxY)
-    for (let i = 0; i < n; i++) quadInsert(quad, nodes[i]!, i)
+    const bw = Math.max(maxX - minX, LAYOUT_K)
+    const bh = Math.max(maxY - minY, LAYOUT_K)
+    const k = Math.max(0.04, Math.min(2.5, Math.min((W - 48) / bw, (H - 48) / bh)))
+    viewRef.current = { k, x: W / 2 - (minX + bw / 2) * k, y: H / 2 - (minY + bh / 2) * k }
+    if (stick) userMovedRef.current = true
+    dirtyRef.current = true
+  }
+
+  const zoomStep = (factor: number): void => {
+    const rect = wrapRef.current?.getBoundingClientRect()
+    const cx = (rect?.width ?? 600) / 2
+    const cy = (rect?.height ?? 400) / 2
+    const v = viewRef.current
+    const k = Math.max(0.04, Math.min(4, v.k * factor))
+    viewRef.current = { k, x: cx - ((cx - v.x) * k) / v.k, y: cy - ((cy - v.y) * k) / v.k }
+    userMovedRef.current = true
+    dirtyRef.current = true
+  }
+
+  /** 搜索命中 → 选中并居中（保持当前缩放，过小则提到 1 倍可读）。 */
+  const locateNode = (node: GNode): void => {
+    applySel(node.id)
+    applySelEdge(null)
+    const rect = wrapRef.current?.getBoundingClientRect()
+    const v = viewRef.current
+    const k = Math.max(v.k, 1)
+    viewRef.current = { k, x: (rect?.width ?? 600) / 2 - node.x * k, y: (rect?.height ?? 400) / 2 - node.y * k }
+    userMovedRef.current = true
+    dirtyRef.current = true
+  }
+
+  const toggleType = (type: string): void => {
+    const next = new Set(hiddenRef.current)
+    if (next.has(type)) next.delete(type)
+    else next.add(type)
+    applyHidden(next)
+  }
+
+  // ── 力导向一步（世界坐标）：网格近场接触斥力 + Hooke 弹簧 + 微弱向心 ──
+  // 健康摊开后每格约 1 节点，每帧只需 ~9 格邻域配对（O(n)，快于四叉树）；
+  // FR 的 d² 弹簧+平方斥力会把稀疏图压成致密核（仿真实证 81% 节点堆入一格），故弃用。
+  const layoutStep = (d: { nodes: GNode[]; edges: GEdge[] }): void => {
+    const nodes = d.nodes
+    const n = nodes.length
+    if (n === 0) { alphaRef.current = 0; return }
+    const cell = new Map<number, number[]>()
+    nodes.forEach((node, i) => {
+      const key = Math.floor(node.x / LAYOUT_K) * 131072 + Math.floor(node.y / LAYOUT_K)
+      let list = cell.get(key)
+      if (list === undefined) { list = []; cell.set(key, list) }
+      list.push(i)
+    })
     const dispX = new Float64Array(n)
     const dispY = new Float64Array(n)
+    const indexBy = new Map<number, number>()
+    nodes.forEach((node, i) => indexBy.set(node.id, i))
     for (let i = 0; i < n; i++) {
-      const node = nodes[i]!
-      applyBH(quad, node, k, dispX, dispY, i)
+      const a = nodes[i]!
+      const gx = Math.floor(a.x / LAYOUT_K)
+      const gy = Math.floor(a.y / LAYOUT_K)
+      for (let ox = -1; ox <= 1; ox++) {
+        for (let oy = -1; oy <= 1; oy++) {
+          const list = cell.get((gx + ox) * 131072 + (gy + oy))
+          if (list === undefined) continue
+          for (const j of list) {
+            if (j <= i) continue
+            const b = nodes[j]!
+            let dx = a.x - b.x
+            let dy = a.y - b.y
+            let dist = Math.hypot(dx, dy)
+            if (dist < 1e-6) {
+              // 同位节点：按索引确定性抖开（随机抖动会让重排结果不可复现）
+              const ang = (i * 2.399963 + j) % (Math.PI * 2)
+              dx = Math.cos(ang)
+              dy = Math.sin(ang)
+              dist = 1
+            }
+            const f = dist < LAYOUT_K ? (CONTACT_F * (2 * LAYOUT_K - dist)) / LAYOUT_K : (LAYOUT_K * LAYOUT_K) / (dist * dist)
+            const ux = dx / dist
+            const uy = dy / dist
+            dispX[i]! += ux * f
+            dispY[i]! += uy * f
+            dispX[j]! -= ux * f
+            dispY[j]! -= uy * f
+          }
+        }
+      }
     }
-    for (const e of data.edges) {
+    for (const e of d.edges) {
       const ia = indexBy.get(e.s)
       const ib = indexBy.get(e.t)
       if (ia === undefined || ib === undefined) continue
@@ -357,38 +511,40 @@ function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; 
       const b = nodes[ib]!
       const dx = a.x - b.x
       const dy = a.y - b.y
-      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
-      const f = (d * d) / (k * 1.4)
-      dispX[ia]! -= (dx / d) * f
-      dispY[ia]! -= (dy / d) * f
-      dispX[ib]! += (dx / d) * f
-      dispY[ib]! += (dy / d) * f
+      const dist = Math.max(Math.hypot(dx, dy), 1)
+      const f = (dist - SPRING_REST) * SPRING_STIFF
+      const ux = dx / dist
+      const uy = dy / dist
+      dispX[ia] -= ux * f
+      dispY[ia] -= uy * f
+      dispX[ib] += ux * f
+      dispY[ib] += uy * f
     }
+    const pinnedId = dragRef.current.id
     for (let i = 0; i < n; i++) {
       const node = nodes[i]!
-      dispX[i]! -= (node.x - W / 2) * 0.04
-      dispY[i]! -= (node.y - H / 2) * 0.04
-      const d = Math.max(Math.sqrt(dispX[i]! * dispX[i]! + dispY[i]! * dispY[i]!), 1)
-      const limit = Math.min(d, 26) * alphaRef.current
-      const dragged = dragNode.current === node.id
-      if (!dragged) {
-        node.x += (dispX[i]! / d) * limit
-        node.y += (dispY[i]! / d) * limit
+      dispX[i]! -= node.x * GRAVITY
+      dispY[i]! -= node.y * GRAVITY
+      const mag = Math.hypot(dispX[i]!, dispY[i]!)
+      if (mag < 1e-9) continue
+      const limit = Math.min(mag, MOVE_CAP) * alphaRef.current
+      if (pinnedId !== node.id) {
+        node.x += (dispX[i]! / mag) * limit
+        node.y += (dispY[i]! / mag) * limit
       }
-      node.x = Math.max(14, Math.min(W - 14, node.x))
-      node.y = Math.max(14, Math.min(H - 14, node.y))
     }
-    alphaRef.current *= 0.992
+    alphaRef.current = alphaRef.current < 0.02 ? 0 : alphaRef.current * 0.996
   }
 
-  // ── 绘制 ──
-  const draw = (): void => {
+  // ── 绘制：世界坐标图元 + 屏幕空间标签；视口裁剪 + 聚焦置暗（不擦除）──
+  const draw = (wrap: HTMLDivElement): void => {
     const canvas = canvasRef.current
-    const wrap = wrapRef.current
-    if (canvas === null || wrap === null || data === null) return
+    const d = dataRef.current
+    const idx = indexRef.current
+    if (canvas === null || d === null || idx === null) return
     const rect = wrap.getBoundingClientRect()
-    const W = Math.max(rect.width, 300)
-    const H = Math.max(rect.height, 300)
+    const W = Math.max(rect.width, 60)
+    const H = Math.max(rect.height, 60)
     const dpr = window.devicePixelRatio || 1
     if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
       canvas.width = Math.round(W * dpr)
@@ -398,132 +554,300 @@ function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; 
     }
     const ctx = canvas.getContext('2d')
     if (ctx === null) return
+    const view = viewRef.current
+    const hidden = hiddenRef.current
+    const sel = selRef.current
+    const selE = selEdgeRef.current
+    const activeEdge = hoverEdgeRef.current ?? selE
+    // 聚焦集：选中节点 + 一跳邻居；其余置暗而非擦除，保住上下文
+    let focus: Set<number> | null = null
+    let focusEdges: Set<GEdge> | null = null
+    if (sel !== null) {
+      focus = new Set<number>([sel])
+      focusEdges = new Set<GEdge>()
+      for (const link of idx.adj.get(sel) ?? []) { focus.add(link.other); focusEdges.add(link.edge) }
+    }
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     ctx.clearRect(0, 0, W, H)
+    // 视口世界矩形（含余量），裁剪可见图元
+    const wx0 = -view.x / view.k - 60
+    const wy0 = -view.y / view.k - 60
+    const wx1 = (W - view.x) / view.k + 60
+    const wy1 = (H - view.y) / view.k + 60
+    const on = (n: GNode): boolean => !hidden.has(n.type) && n.x >= wx0 && n.x <= wx1 && n.y >= wy0 && n.y <= wy1
+    /** 边索引 → 端点对（越界/端点缺失返回 null，noUncheckedIndexedAccess 兜底）。 */
+    const edgeEnds = (i: number | null): { readonly a: GNode; readonly b: GNode; readonly e: GEdge } | null => {
+      if (i === null) return null
+      const e = d.edges[i]
+      if (e === undefined) return null
+      const a = idx.byId.get(e.s)
+      const b = idx.byId.get(e.t)
+      if (a === undefined || b === undefined) return null
+      return { a, b, e }
+    }
+    const arrow = (a: GNode, b: GNode): void => {
+      const dx = b.x - a.x
+      const dy = b.y - a.y
+      const dist = Math.max(Math.hypot(dx, dy), 1)
+      const ux = dx / dist
+      const uy = dy / dist
+      const rB = nodeR(b)
+      const ax = b.x - ux * (rB + 2)
+      const ay = b.y - uy * (rB + 2)
+      ctx.beginPath()
+      ctx.moveTo(ax, ay)
+      ctx.lineTo(ax - ux * 5 - uy * 2.4, ay - uy * 5 + ux * 2.4)
+      ctx.lineTo(ax - ux * 5 + uy * 2.4, ay - uy * 5 - ux * 2.4)
+      ctx.closePath()
+      ctx.fill()
+    }
     ctx.save()
     ctx.translate(view.x, view.y)
     ctx.scale(view.k, view.k)
-    const ego = egoId
-    const egoSet = new Set<number>()
-    if (ego !== null) {
-      egoSet.add(ego)
-      for (const e of data.edges) {
-        if (e.s === ego || e.t === ego) { egoSet.add(e.s); egoSet.add(e.t) }
-      }
-    }
-    // 边
-    ctx.strokeStyle = 'rgba(120,130,145,0.5)'
+    // 边（聚焦时非邻接边压到近隐形；端点都不在视口内的跳过）
     ctx.lineWidth = 1 / view.k
+    ctx.strokeStyle = focus !== null ? 'rgba(128,138,152,0.08)' : 'rgba(128,138,152,0.32)'
     ctx.beginPath()
-    for (const e of data.edges) {
-      const a = byIdMap(data.nodes).get(e.s)
-      const b = byIdMap(data.nodes).get(e.t)
-      if (a === undefined || b === undefined) continue
-      if (ego !== null && !egoSet.has(e.s)) continue
+    for (const e of d.edges) {
+      if (focusEdges !== null && focusEdges.has(e)) continue
+      const a = idx.byId.get(e.s)
+      const b = idx.byId.get(e.t)
+      if (a === undefined || b === undefined || hidden.has(a.type) || hidden.has(b.type)) continue
+      const aIn = a.x >= wx0 && a.x <= wx1 && a.y >= wy0 && a.y <= wy1
+      const bIn = b.x >= wx0 && b.x <= wx1 && b.y >= wy0 && b.y <= wy1
+      if (!aIn && !bIn) continue
       ctx.moveTo(a.x, a.y)
       ctx.lineTo(b.x, b.y)
     }
     ctx.stroke()
-    // 箭头（抽样绘制，全部绘制在低缩放时不可辨）
-    if (view.k > 0.8) {
-      ctx.fillStyle = 'rgba(140,150,165,0.7)'
-      for (const e of data.edges) {
-        const a = byIdMap(data.nodes).get(e.s)
-        const b = byIdMap(data.nodes).get(e.t)
-        if (a === undefined || b === undefined) continue
-        if (ego !== null && !egoSet.has(e.s)) continue
-        const dx = b.x - a.x
-        const dy = b.y - a.y
-        const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
-        const ux = dx / d
-        const uy = dy / d
-        const rB = nodeR(b)
-        const ax = b.x - ux * (rB + 2)
-        const ay = b.y - uy * (rB + 2)
+    // 高亮边：选中节点的邻接边 + 悬停/点选的那条关系边
+    ctx.strokeStyle = FOCUS_COLOR
+    ctx.lineWidth = 1.6 / view.k
+    ctx.beginPath()
+    for (const e of focusEdges ?? []) {
+      const a = idx.byId.get(e.s)
+      const b = idx.byId.get(e.t)
+      if (a === undefined || b === undefined) continue
+      ctx.moveTo(a.x, a.y)
+      ctx.lineTo(b.x, b.y)
+    }
+    if (activeEdge !== null) {
+      const ends = edgeEnds(activeEdge)
+      if (ends !== null) { ctx.moveTo(ends.a.x, ends.a.y); ctx.lineTo(ends.b.x, ends.b.y) }
+    }
+    ctx.stroke()
+    // 箭头：高亮边常绘；普通边放大到可辨才绘
+    ctx.fillStyle = FOCUS_COLOR
+    for (const e of focusEdges ?? []) {
+      const a = idx.byId.get(e.s)
+      const b = idx.byId.get(e.t)
+      if (a !== undefined && b !== undefined) arrow(a, b)
+    }
+    if (activeEdge !== null) {
+      const ends = edgeEnds(activeEdge)
+      if (ends !== null && (focusEdges === null || !focusEdges.has(ends.e))) arrow(ends.a, ends.b)
+    }
+    if (view.k > 1.6) {
+      ctx.fillStyle = 'rgba(128,138,152,0.6)'
+      for (const e of d.edges) {
+        if (focusEdges !== null && focusEdges.has(e)) continue
+        const a = idx.byId.get(e.s)
+        const b = idx.byId.get(e.t)
+        if (a === undefined || b === undefined || hidden.has(a.type) || hidden.has(b.type)) continue
+        if (!on(a) && !on(b)) continue
+        arrow(a, b)
+      }
+    }
+    // 节点：聚焦域正常、其余 0.12 透明度（按类型分批填充）
+    const drawNodes = (dim: boolean): void => {
+      const batch = new Map<string, GNode[]>()
+      for (const node of d.nodes) {
+        if (!on(node)) continue
+        const isDim = focus !== null && !focus.has(node.id)
+        if (isDim !== dim) continue
+        let list = batch.get(node.type)
+        if (list === undefined) { list = []; batch.set(node.type, list) }
+        list.push(node)
+      }
+      for (const [type, list] of batch) {
+        ctx.fillStyle = typeColor(type)
         ctx.beginPath()
-        ctx.moveTo(ax, ay)
-        ctx.lineTo(ax - ux * 5 - uy * 2.4, ay - uy * 5 + ux * 2.4)
-        ctx.lineTo(ax - ux * 5 + uy * 2.4, ay - uy * 5 - ux * 2.4)
-        ctx.closePath()
+        for (const node of list) {
+          const r = nodeR(node)
+          ctx.moveTo(node.x + r, node.y)
+          ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
+        }
         ctx.fill()
       }
     }
-    // 节点（按类型分批填充）
-    const byType = new Map<string, number[]>()
-    data.nodes.forEach((node, i) => {
-      let list = byType.get(node.type)
-      if (list === undefined) { list = []; byType.set(node.type, list) }
-      list.push(i)
-    })
-    for (const [type, idxs] of byType) {
-      ctx.fillStyle = typeColor(type)
+    ctx.globalAlpha = 0.12
+    drawNodes(true)
+    ctx.globalAlpha = 1
+    drawNodes(false)
+    // 悬停/选中节点描环
+    ctx.lineWidth = 1.6 / view.k
+    for (const node of d.nodes) {
+      const isHot = hoverNodeRef.current === node.id
+      const isSel = sel === node.id
+      if (!isHot && !isSel) continue
+      ctx.strokeStyle = isSel ? FOCUS_COLOR : 'rgba(255,255,255,0.9)'
       ctx.beginPath()
-      for (const i of idxs) {
-        const node = data.nodes[i]!
-        if (ego !== null && !egoSet.has(node.id)) continue
-        const r = nodeR(node)
-        ctx.moveTo(node.x + r, node.y)
-        ctx.arc(node.x, node.y, r, 0, Math.PI * 2)
-      }
-      ctx.fill()
-    }
-    // 标签（LOD：缩放足够或度数高或悬停/ego 时绘制）
-    ctx.font = '10px system-ui, sans-serif'
-    ctx.textAlign = 'center'
-    const labelAlpha = Math.max(0, Math.min(1, (view.k - 0.55) / 0.5))
-    for (const node of data.nodes) {
-      if (ego !== null && !egoSet.has(node.id)) continue
-      const isHot = hoverId === node.id
-      const show = isHot || ego === node.id || node.degree >= 8 || labelAlpha > 0.3
-      if (!show) continue
-      ctx.fillStyle = isHot ? '#ffffff' : 'rgba(215,220,226,0.92)'
-      ctx.fillText(node.name.length > 16 ? `${node.name.slice(0, 15)}…` : node.name, node.x, node.y + nodeR(node) + 11)
+      ctx.arc(node.x, node.y, nodeR(node) + 2.5 / view.k, 0, Math.PI * 2)
+      ctx.stroke()
     }
     ctx.restore()
+    // 标签（屏幕空间，字号恒定可读）：远景只标枢纽 + 热点，放大后视口内全标；
+    // 中性灰描边做晕圈，浅色/深色主题下都压得住底图
+    ctx.font = '10px system-ui, sans-serif'
+    ctx.textAlign = 'center'
+    const fg = fgRef.current
+    const hubN = view.k >= 1 ? Number.POSITIVE_INFINITY : view.k >= 0.55 ? 60 : 18
+    let labeled = 0
+    for (const node of idx.hubs) {
+      const isHot = hoverNodeRef.current === node.id || sel === node.id
+      if (hidden.has(node.type)) continue
+      const sx = node.x * view.k + view.x
+      const sy = node.y * view.k + view.y
+      if (sx < -70 || sx > W + 70 || sy < -20 || sy > H + 20) continue
+      if (!isHot) {
+        if (focus !== null && !focus.has(node.id)) continue
+        if (labeled >= hubN) continue
+        labeled++
+      }
+      const text = node.name.length > 16 ? `${node.name.slice(0, 15)}…` : node.name
+      const ty = sy + nodeR(node) * view.k + 11
+      ctx.lineWidth = 3
+      ctx.strokeStyle = 'rgba(127,127,127,0.6)'
+      ctx.strokeText(text, sx, ty)
+      ctx.fillStyle = fg
+      ctx.fillText(text, sx, ty)
+    }
+    // 悬停/点选的关系边：中点标关系类型
+    if (activeEdge !== null) {
+      const ends = edgeEnds(activeEdge)
+      if (ends !== null && !hidden.has(ends.a.type) && !hidden.has(ends.b.type)) {
+        const mx = (ends.a.x + ends.b.x) / 2 * view.k + view.x
+        const my = (ends.a.y + ends.b.y) / 2 * view.k + view.y
+        const text = `${ends.e.type} · w=${ends.e.weight}`
+        ctx.lineWidth = 3
+        ctx.strokeStyle = 'rgba(127,127,127,0.6)'
+        ctx.strokeText(text, mx, my - 4)
+        ctx.fillStyle = FOCUS_COLOR
+        ctx.fillText(text, mx, my - 4)
+      }
+    }
   }
 
-  // ── 动画循环 ──
+  // 每帧一步：布局（未收敛且未暂停）→ 脏了才绘制。stepRef 每渲染刷新，
+  // 循环 effect 只挂载一次，天然读到最新 index；收敛后每帧只剩两个 if。
+  const stepRef = useRef((): void => {})
+  stepRef.current = () => {
+    const d = dataRef.current
+    const wrap = wrapRef.current
+    if (d === null || wrap === null) return
+    if (!pausedRef.current && alphaRef.current > 0.015) {
+      layoutStep(d)
+      dirtyRef.current = true
+      frameRef.current++
+      // 布局期间自动取景跟手（用户一旦手动平移/缩放即停）；收敛时定帧
+      if (!userMovedRef.current && (frameRef.current % 30 === 0 || alphaRef.current <= 0.015)) fitToView(false)
+    }
+    if (dirtyRef.current) {
+      draw(wrap)
+      dirtyRef.current = false
+    }
+  }
+
+  // ── 动画循环 + 视口观察（只挂载一次）──
   useEffect(() => {
     const tick = (): void => {
-      layoutStep()
-      draw()
+      stepRef.current()
       rafRef.current = requestAnimationFrame(tick)
     }
     rafRef.current = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(rafRef.current)
-  })
+    const ro = new ResizeObserver(() => {
+      dirtyRef.current = true
+      const wrap = wrapRef.current
+      if (wrap !== null) fgRef.current = getComputedStyle(wrap).color
+    })
+    const wrap = wrapRef.current
+    const canvas = canvasRef.current
+    if (wrap !== null) ro.observe(wrap)
+    // 滚轮缩放：native 非被动监听（React 合成 wheel 是被动的，preventDefault 无效），
+    // 锚定光标缩放，不联动页面滚动
+    const onWheel = (e: WheelEvent): void => {
+      e.preventDefault()
+      const rect = canvasRef.current?.getBoundingClientRect()
+      if (rect === null || rect === undefined) return
+      const v = viewRef.current
+      const factor = e.deltaY > 0 ? 0.9 : 1.1
+      const k = Math.max(0.04, Math.min(4, v.k * factor))
+      const cx = e.clientX - rect.left
+      const cy = e.clientY - rect.top
+      viewRef.current = { k, x: cx - ((cx - v.x) * k) / v.k, y: cy - ((cy - v.y) * k) / v.k }
+      userMovedRef.current = true
+      dirtyRef.current = true
+    }
+    canvas?.addEventListener('wheel', onWheel, { passive: false })
+    return () => {
+      cancelAnimationFrame(rafRef.current)
+      ro.disconnect()
+      canvas?.removeEventListener('wheel', onWheel)
+    }
+  }, [])
 
   const nodeR = (n: { degree: number }): number => 4 + Math.min(12, Math.sqrt(n.degree) * 1.7)
-  function radius0(W: number, H: number): number {
-    return Math.min(W, H) * 0.38
-  }
-  function byIdMap(nodes: readonly { id: number; x: number; y: number }[]): Map<number, { x: number; y: number }> {
-    const m = new Map<number, { x: number; y: number }>()
-    for (const n of nodes) m.set(n.id, n)
-    return m
-  }
-  function nodeR2(n: { degree: number }): number {
-    return nodeR(n)
-  }
-  // 四叉树实现（模块级函数声明在组件外）
 
-  const toCanvas = (clientX: number, clientY: number): { x: number; y: number } => {
+  const toWorld = (clientX: number, clientY: number): { x: number; y: number } => {
     const rect = canvasRef.current?.getBoundingClientRect()
     if (rect === undefined || rect === null) return { x: 0, y: 0 }
-    return { x: ((clientX - rect.left) - view.x) / view.k, y: ((clientY - rect.top) - view.y) / view.k }
+    const v = viewRef.current
+    return { x: (clientX - rect.left - v.x) / v.k, y: (clientY - rect.top - v.y) / v.k }
   }
 
-  const pickNode = (cx: number, cy: number): number | null => {
-    if (data === null) return null
+  const pickNode = (x: number, y: number): number | null => {
+    const idx = indexRef.current
+    if (idx === null) return null
+    const slop = 6 / viewRef.current.k
     let best: number | null = null
     let bestD = Infinity
-    for (const node of data.nodes) {
-      const dx = node.x - cx
-      const dy = node.y - cy
-      const d = Math.sqrt(dx * dx + dy * dy)
-      if (d < nodeR(node) + 4 && d < bestD) { best = node.id; bestD = d }
+    for (const node of idx.byId.values()) {
+      if (hiddenRef.current.has(node.type)) continue
+      const d = Math.hypot(node.x - x, node.y - y)
+      if (d < nodeR(node) + slop && d < bestD) { best = node.id; bestD = d }
     }
     return best
+  }
+
+  /** 边命中：点 到 线段 距离；缩放过小时不启用（密集区必选错）。 */
+  const pickEdge = (x: number, y: number): number | null => {
+    const idx = indexRef.current
+    const d = dataRef.current
+    if (idx === null || d === null || viewRef.current.k < 0.6) return null
+    const slop = 5 / viewRef.current.k
+    let best: number | null = null
+    let bestD = slop
+    for (let i = 0; i < d.edges.length; i++) {
+      const e = d.edges[i]!
+      const a = idx.byId.get(e.s)
+      const b = idx.byId.get(e.t)
+      if (a === undefined || b === undefined || hiddenRef.current.has(a.type) || hiddenRef.current.has(b.type)) continue
+      const dist = distToSeg(x, y, a.x, a.y, b.x, b.y)
+      if (dist < bestD) { bestD = dist; best = i }
+    }
+    return best
+  }
+
+  /** tooltip 只在命中目标变化时 setState（不跟随像素级移动，避免每 move 重渲染）。 */
+  const showTip = (x: number, y: number, key: string, text: string): void => {
+    if (tipKeyRef.current === key) return
+    tipKeyRef.current = key
+    setHoverTip({ x: x + 12, y: y + 8, text })
+  }
+  const clearTip = (): void => {
+    if (tipKeyRef.current === '') return
+    tipKeyRef.current = ''
+    setHoverTip(null)
   }
 
   const typesUsed = useMemo(() => {
@@ -533,6 +857,19 @@ function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; 
     return [...set.entries()].sort((a, b) => b[1] - a[1])
   }, [data])
 
+  const matches = useMemo(() => {
+    const q = search.trim().toLowerCase()
+    if (q === '' || data === null) return []
+    const out: GNode[] = []
+    for (const n of data.nodes) {
+      if (n.name.toLowerCase().includes(q)) {
+        out.push(n)
+        if (out.length >= 8) break
+      }
+    }
+    return out
+  }, [search, data])
+
   if (loadErr !== null) {
     return <div className='gv-graph'><div className='gv-empty'>{t('loadFailed')}: {loadErr}</div></div>
   }
@@ -540,155 +877,175 @@ function GraphView(props: { readonly t: Translate; readonly runtime: KbRuntime; 
     return <div className='gv-graph'><div className='gv-empty'>{t('loading')}</div></div>
   }
 
+  const selNode = selId !== null ? index?.byId.get(selId) : undefined
+  const selNeighbors = selId !== null && index !== null ? index.adj.get(selId) ?? [] : []
+
+  const resetDrag = (): void => { dragRef.current = { mode: 'idle', id: null, sx: 0, sy: 0, ox: 0, oy: 0, moved: false } }
+
   return (
     <div className='gv-graph' ref={wrapRef}>
       <div className='gv-graph-head'>
         <span className='gv-name'>{t('graphTitle')}</span>
-        <span className='gv-badge'>{t('graphCounts', { nodes: data.nodes.length, edges: data.edges.length })}</span>
-        {egoId !== null && <button className='gv-btn' style={{ padding: '1px 8px' }} onClick={() => setEgoId(null)}>{t('graphClearEgo')}</button>}
+        <span className='gv-badge'>
+          {t('graphCounts', { nodes: data.nodes.length, edges: data.edges.length })}
+          {hiddenTypes.size > 0 ? ` ${t('graphFiltered', { n: hiddenTypes.size })}` : ''}
+        </span>
+        <div className='gv-graph-search'>
+          <input value={search} placeholder={t('graphSearchPlaceholder')} onChange={e => setSearch(e.target.value)} />
+          {search.trim() !== '' && (
+            <div className='gv-graph-searchlist'>
+              {matches.length === 0 && <span className='gv-graph-search-empty'>{t('graphSearchEmpty')}</span>}
+              {matches.map(n => (
+                <button key={n.id} onClick={() => { locateNode(n); setSearch('') }}>{n.name}（{n.type}）</button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div className='gv-actions'>
+          <button className='gv-btn' onClick={() => { pausedRef.current = !pausedRef.current; setLayoutPaused(pausedRef.current); dirtyRef.current = true }}>{layoutPaused ? t('graphResume') : t('graphPause')}</button>
+          <button className='gv-btn' onClick={() => {
+            const d = dataRef.current
+            if (d === null) return
+            pausedRef.current = false
+            setLayoutPaused(false)
+            seedPositions(d.nodes)
+            alphaRef.current = 1
+            frameRef.current = 0
+            userMovedRef.current = false
+            dirtyRef.current = true
+          }}>{t('graphRelayout')}</button>
+          <button className='gv-btn' onClick={() => fitToView(true)}>{t('graphFit')}</button>
+          {(selId !== null || selEdge !== null) && (
+            <button className='gv-btn' onClick={() => { applySel(null); applySelEdge(null) }}>{t('graphClearSel')}</button>
+          )}
+        </div>
       </div>
       <div className='gv-legend'>
         {typesUsed.map(([type, count]) => (
-          <span key={type} title={type}><i style={{ background: typeColor(type) }} />{type} {count}</span>
+          <button key={type} title={type} className={hiddenTypes.has(type) ? 'gv-legend-off' : ''} onClick={() => toggleType(type)}>
+            <i style={{ background: typeColor(type) }} />{type} {count}
+          </button>
         ))}
       </div>
       <canvas
         ref={canvasRef}
-        style={{ cursor: hoverId !== null ? 'pointer' : 'grab' }}
-        onWheel={e => {
-          const factor = e.deltaY > 0 ? 0.9 : 1.1
-          setView(v => {
-            const k = Math.max(0.08, Math.min(4, v.k * factor))
-            const rect = canvasRef.current?.getBoundingClientRect()
-            if (rect === undefined || rect === null) return { ...v, k }
-            const cx = e.clientX - rect.left
-            const cy = e.clientY - rect.top
-            return { k, x: cx - ((cx - v.x) * k) / v.k, y: cy - ((cy - v.y) * k) / v.k }
-          })
-        }}
+        style={{ cursor: 'grab' }}
         onPointerDown={e => {
-          const p = toCanvas(e.clientX, e.clientY)
-          const hit = pickNode(p.x, p.y)
-          if (hit !== null) {
-            dragNode.current = hit
-          } else {
-            panState.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
-          }
           ;(e.target as Element).setPointerCapture?.(e.pointerId)
+          const p = toWorld(e.clientX, e.clientY)
+          const v = viewRef.current
+          dragRef.current = { mode: 'press', id: pickNode(p.x, p.y), sx: e.clientX, sy: e.clientY, ox: v.x, oy: v.y, moved: false }
         }}
         onPointerMove={e => {
-          const pan = panState.current
-          if (pan !== null) {
-            const rect = canvasRef.current?.getBoundingClientRect()
-            if (rect === undefined || rect === null) return
-            setView(v => ({ ...v, x: pan.ox + (e.clientX - pan.sx), y: pan.oy + (e.clientY - pan.sy) }))
+          const drag = dragRef.current
+          if (drag.mode === 'press') {
+            // 按下后位移 >4px 才算拖拽：拖节点 / 平移；否则留着等 pointerup 判点击
+            if (!drag.moved && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) > 4) {
+              drag.moved = true
+              if (drag.id === null) { const c = canvasRef.current; if (c !== null) c.style.cursor = 'grabbing' }
+            }
+            if (!drag.moved) return
+            if (drag.id !== null) {
+              const node = indexRef.current?.byId.get(drag.id)
+              const p = toWorld(e.clientX, e.clientY)
+              if (node !== undefined) { node.x = p.x; node.y = p.y }
+            } else {
+              const v = viewRef.current
+              viewRef.current = { ...v, x: drag.ox + (e.clientX - drag.sx), y: drag.oy + (e.clientY - drag.sy) }
+              userMovedRef.current = true
+            }
+            dirtyRef.current = true
             return
           }
-          const p = toCanvas(e.clientX, e.clientY)
-          const drag = dragNode.current
-          if (drag !== null) {
-            const node = data?.nodes.find(x => x.id === drag)
-            if (node !== undefined) { node.x = p.x; node.y = p.y }
+          // 悬停：节点优先，其次边（边命中仅在足够放大时启用）
+          const p = toWorld(e.clientX, e.clientY)
+          const rect = canvasRef.current?.getBoundingClientRect()
+          const hx = e.clientX - (rect?.left ?? 0)
+          const hy = e.clientY - (rect?.top ?? 0)
+          const hn = pickNode(p.x, p.y)
+          if (hn !== null) {
+            if (hoverEdgeRef.current !== null) { hoverEdgeRef.current = null; dirtyRef.current = true }
+            if (hoverNodeRef.current !== hn) { hoverNodeRef.current = hn; dirtyRef.current = true }
+            const node = indexRef.current?.byId.get(hn)
+            if (node !== undefined) showTip(hx, hy, `n${hn}`, `${node.name}（${node.type} · deg ${node.degree}）`)
+            const c = canvasRef.current
+            if (c !== null) c.style.cursor = 'pointer'
             return
           }
-          const hit = pickNode(p.x, p.y)
-          setHoverId(prev => (prev === hit ? prev : hit))
-          if (hit !== null) {
-            const node = data?.nodes.find(x => x.id === hit)
-            if (node !== undefined) setHoverTip({ x: e.clientX - (canvasRef.current?.getBoundingClientRect().left ?? 0), y: e.clientY - (canvasRef.current?.getBoundingClientRect().top ?? 0), text: `${node.name}（${node.type}，deg ${node.degree}）` })
-          } else setHoverTip(null)
+          if (hoverNodeRef.current !== null) { hoverNodeRef.current = null; dirtyRef.current = true }
+          const he = pickEdge(p.x, p.y)
+          if (hoverEdgeRef.current !== he) { hoverEdgeRef.current = he; dirtyRef.current = true }
+          const c = canvasRef.current
+          if (c !== null) c.style.cursor = he !== null ? 'pointer' : 'grab'
+          if (he !== null) {
+            const e2 = dataRef.current?.edges[he]
+            const a = e2 !== undefined ? indexRef.current?.byId.get(e2.s) : undefined
+            const b = e2 !== undefined ? indexRef.current?.byId.get(e2.t) : undefined
+            if (e2 !== undefined && a !== undefined && b !== undefined) showTip(hx, hy, `e${he}`, `${a.name} —${e2.type}→ ${b.name} · w=${e2.weight}`)
+          } else clearTip()
         }}
         onPointerUp={e => {
-          const p = toCanvas(e.clientX, e.clientY)
-          const drag = dragNode.current
-          if (drag !== null) {
-            const moved = pickNode(p.x, p.y) === drag
-            if (!moved) {
-              // 单击节点：ego 高亮（再点取消）
-              setEgoId(prev => (prev === drag ? null : drag))
+          const drag = dragRef.current
+          resetDrag()
+          const c = canvasRef.current
+          if (c !== null) c.style.cursor = 'grab'
+          if (drag.mode !== 'press' || drag.moved) return
+          // 纯点击：节点 → 聚焦开关（看详情/邻居）；边 → 关系高亮；空白 → 清除
+          if (drag.id !== null) {
+            applySelEdge(null)
+            applySel(selRef.current === drag.id ? null : drag.id)
+          } else {
+            const p = toWorld(e.clientX, e.clientY)
+            const he = pickEdge(p.x, p.y)
+            if (he !== null) {
+              applySel(null)
+              applySelEdge(selEdgeRef.current === he ? null : he)
+            } else {
+              applySel(null)
+              applySelEdge(null)
             }
           }
-          dragNode.current = null
-          panState.current = null
         }}
-        onPointerLeave={() => { dragNode.current = null; panState.current = null; setHoverTip(null) }}
-        onDoubleClick={e => {
-          const p = toCanvas(e.clientX, e.clientY)
-          const hit = pickNode(p.x, p.y)
-          if (hit !== null) setEgoId(prev => (prev === hit ? null : hit))
-        }}
+        onPointerLeave={() => { resetDrag(); hoverNodeRef.current = null; hoverEdgeRef.current = null; dirtyRef.current = true; clearTip() }}
       />
       {hoverTip !== null && (
-        <div className='gv-graph-tip' style={{ left: hoverTip.x + 12, top: hoverTip.y + 8 }}>{hoverTip.text}</div>
+        <div className='gv-graph-tip' style={{ left: hoverTip.x, top: hoverTip.y }}>{hoverTip.text}</div>
       )}
+      {selNode !== undefined && (
+        <div className='gv-graph-card'>
+          <div className='gv-graph-card-head'>
+            <span className='gv-name'>{selNode.name}</span>
+            <span className='gv-badge'>{selNode.type}</span>
+            <span className='gv-badge'>deg {selNode.degree}</span>
+            <div className='gv-graph-card-tools'>
+              {canLocate && <button className='gv-btn' onClick={() => { document.getElementById(`gv-card-${selNode.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }) }}>{t('graphLocate')}</button>}
+              <button className='gv-btn' title={t('graphClearSel')} onClick={() => { applySel(null); applySelEdge(null) }}>×</button>
+            </div>
+          </div>
+          <div className='gv-graph-card-body'>
+            <div className='gv-cost'>{t('graphNeighbors', { n: selNeighbors.length })}</div>
+            {selNeighbors.map((link, i) => {
+              const other = index?.byId.get(link.other)
+              return (
+                <button key={i} className='gv-graph-card-row' disabled={other === undefined} onClick={() => { if (other !== undefined) locateNode(other) }}>
+                  <span className='gv-cost'>{link.edge.s === selNode.id ? '→' : '←'}</span>
+                  <span className='gv-cost'>{link.edge.type}</span>
+                  <span>{other?.name ?? '?'}</span>
+                  <span className='gv-cost'>w={link.edge.weight}</span>
+                </button>
+              )
+            })}
+          </div>
+        </div>
+      )}
+      <div className='gv-graph-ctl'>
+        <button className='gv-btn' title={t('graphZoomIn')} onClick={() => zoomStep(1.25)}>＋</button>
+        <button className='gv-btn' title={t('graphZoomOut')} onClick={() => zoomStep(0.8)}>－</button>
+      </div>
       <div className='gv-graph-hint'>{t('graphHint')}</div>
     </div>
   )
 }
-
-// ── Barnes-Hut 四叉树（模块级）──────────────────────────────────────────────
-const BH_THETA = 0.9
-function applyBH(root: QuadNode, node: { x: number; y: number }, k: number, dispX: Float64Array, dispY: Float64Array, selfIdx: number): void {
-  const stack: QuadNode[] = [root]
-  while (stack.length > 0) {
-    const q = stack.pop()!
-    if (q.mass === 0) continue
-    const dx = q.cx - node.x
-    const dy = q.cy - node.y
-    const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
-    const isLeafItem = q.itemIdx >= 0
-    if (isLeafItem && q.itemIdx === selfIdx) continue
-    if (isLeafItem || ((q.x1 - q.x0) / d) < BH_THETA) {
-      const f = (k * k * q.mass) / (d * d)
-      dispX[selfIdx]! += (dx / d) * f
-      dispY[selfIdx]! += (dy / d) * f
-    } else {
-      for (const c of q.child) if (c !== null) stack.push(c)
-    }
-  }
-}
-
-// ── Barnes-Hut 四叉树（模块级）──────────────────────────────────────────────
-interface QuadNode {
-  x0: number; y0: number; x1: number; y1: number
-  mass: number
-  cx: number; cy: number
-  child: [QuadNode | null, QuadNode | null, QuadNode | null, QuadNode | null]
-  itemIdx: number
-}
-function buildQuad(x0: number, y0: number, x1: number, y1: number): QuadNode {
-  return { x0, y0, x1, y1, mass: 0, cx: 0, cy: 0, child: [null, null, null, null], itemIdx: -1 }
-}
-function quadInsert(q: QuadNode, item: { x: number; y: number }, idx: number): void {
-  if (item.x < q.x0 || item.x > q.x1 || item.y < q.y0 || item.y > q.y1) return
-  if (q.itemIdx === -1 && q.mass === 0) { q.itemIdx = idx; q.mass = 1; q.cx = item.x; q.cy = item.y; return }
-  if (q.itemIdx >= 0) {
-    const held = q.itemIdx
-    q.itemIdx = -1
-    quadInsertChild(q, q.cx, q.cy, held)
-  }
-  q.mass += 1
-  q.cx = (q.cx * (q.mass - 1) + item.x) / q.mass
-  q.cy = (q.cy * (q.mass - 1) + item.y) / q.mass
-  quadInsertChild(q, item.x, item.y, idx)
-}
-function quadInsertChild(q: QuadNode, x: number, y: number, idx: number): void {
-  const mx = (q.x0 + q.x1) / 2
-  const my = (q.y0 + q.y1) / 2
-  const i = (x >= mx ? 1 : 0) + (y >= my ? 2 : 0)
-  let c = q.child[i] ?? null
-  if (c === null) {
-    const x0 = i % 2 === 0 ? q.x0 : mx
-    const x1 = i % 2 === 0 ? mx : q.x1
-    const y0 = i < 2 ? q.y0 : my
-    const y1 = i < 2 ? my : q.y1
-    c = buildQuad(x0, y0, x1, y1)
-    q.child[i] = c
-  }
-  quadInsert(c, { x, y }, idx)
-}
-
-
 
 function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string }): React.ReactElement {
   const { runtime, t, kbId } = props
@@ -707,7 +1064,7 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
     const sel = window.getSelection()
     const text = sel?.toString() ?? ''
     const anchor = sel?.anchorNode?.parentElement
-    if (sel === null || sel.isCollapsed || text.trim().length < 2 || anchor === null || anchor.closest('.gv-md, .gv-pre') === null) {
+    if (sel === null || sel.isCollapsed || text.trim().length < 2 || anchor === null || anchor === undefined || anchor.closest('.gv-md, .gv-pre') === null) {
       setSelChip(null)
       return
     }

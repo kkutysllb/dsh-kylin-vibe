@@ -75,10 +75,34 @@ const CSS = `
 .gv-split-divider:hover, .gv-split-divider[data-drag='1'] { background: var(--gv-fill); }
 .gv-split-right { flex: 0 0 44%; position: sticky; top: 0; min-width: 280px; }
 .gv-graph { border: 1px solid var(--gv-border); border-radius: 10px; background: rgba(127,127,127,.05); height: 78vh; max-height: 860px; min-height: 420px; position: relative; overflow: hidden; }
-.gv-graph svg { width: 100%; height: 100%; display: block; cursor: grab; }
-.gv-graph-head { position: absolute; top: 8px; left: 10px; right: 10px; display: flex; align-items: center; gap: 8px; z-index: 2; pointer-events: none; }
+.gv-graph canvas { display: block; cursor: grab; }
+.gv-graph-head { position: absolute; top: 8px; left: 10px; right: 10px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; z-index: 5; pointer-events: none; }
 .gv-graph-head .gv-name { font-size: 12px; }
-.gv-legend { position: absolute; top: 30px; left: 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10.5px; color: var(--gv-fg-muted); max-width: 70%; z-index: 2; pointer-events: none; }
+.gv-graph-head .gv-actions, .gv-graph-head .gv-graph-search { pointer-events: auto; }
+.gv-graph-head .gv-actions { margin: 0 0 0 auto; flex-wrap: wrap; }
+.gv-graph-head .gv-btn { padding: 1px 8px; font-size: 11px; }
+.gv-graph-search { position: relative; }
+.gv-graph-search input { width: 160px; padding: 2px 8px; font-size: 11px; border-radius: 999px; }
+.gv-graph-searchlist { position: absolute; top: calc(100% + 4px); left: 0; right: 0; z-index: 6; background: var(--dsw-alias-bg-layer-3, #fff); border: 1px solid var(--gv-border); border-radius: 8px; max-height: 200px; overflow-y: auto; box-shadow: 0 4px 14px rgba(0,0,0,.15); }
+.gv-graph-searchlist button { display: block; width: 100%; text-align: left; padding: 4px 8px; background: transparent; border: none; cursor: pointer; color: #1f2329; font-size: 11px; }
+.gv-graph-searchlist button:hover { background: rgba(127,127,127,.14); }
+.gv-graph-search-empty { display: block; padding: 6px 8px; font-size: 11px; color: #5a6472; }
+.gv-legend { position: absolute; top: 30px; left: 10px; display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 10.5px; color: var(--gv-fg-muted); max-width: 70%; z-index: 2; align-items: center; }
+.gv-legend button { display: inline-flex; align-items: center; border: none; background: transparent; color: inherit; font: inherit; padding: 0; cursor: pointer; }
+.gv-legend button:hover { color: var(--gv-fg); }
+.gv-legend button.gv-legend-off { opacity: .35; text-decoration: line-through; }
 .gv-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.gv-graph-tip { position: absolute; z-index: 6; max-width: 340px; background: rgba(22,24,29,.92); color: #f2f4f7; font-size: 11px; line-height: 1.4; padding: 5px 8px; border-radius: 6px; pointer-events: none; box-shadow: 0 2px 8px rgba(0,0,0,.25); word-break: break-all; }
+.gv-graph-card { position: absolute; top: 56px; right: 10px; width: 250px; max-height: 58%; display: flex; flex-direction: column; border: 1px solid var(--gv-border); border-radius: 10px; background: var(--dsw-alias-bg-layer-3, var(--dsw-alias-bg-layer-2, rgba(127,127,127,.08))); box-shadow: 0 4px 14px rgba(0,0,0,.15); z-index: 4; font-size: 12px; }
+.gv-graph-card-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 10px 6px; border-bottom: 1px solid var(--gv-border); }
+.gv-graph-card-tools { margin-left: auto; display: flex; gap: 4px; }
+.gv-graph-card-tools .gv-btn { padding: 0 6px; font-size: 12px; line-height: 1.4; }
+.gv-graph-card-body { overflow-y: auto; padding: 6px 8px 8px; }
+.gv-graph-card-row { display: flex; align-items: baseline; gap: 6px; width: 100%; text-align: left; border: none; background: transparent; color: var(--gv-fg); padding: 3px 4px; border-radius: 6px; cursor: pointer; font-size: 12px; font-family: inherit; }
+.gv-graph-card-row:hover { background: var(--gv-fill); }
+.gv-graph-card-row:disabled { cursor: default; opacity: .5; }
+.gv-graph-card-row span:nth-child(3) { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gv-graph-ctl { position: absolute; right: 10px; bottom: 26px; display: flex; flex-direction: column; gap: 4px; z-index: 3; }
+.gv-graph-ctl .gv-btn { padding: 0 8px; font-size: 13px; line-height: 1.5; background: var(--gv-layer); }
 .gv-graph-hint { position: absolute; bottom: 6px; right: 10px; font-size: 10px; color: var(--gv-fg-muted); pointer-events: none; }
 `
