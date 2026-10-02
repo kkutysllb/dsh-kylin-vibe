@@ -5,7 +5,8 @@
  * 不触碰工具面（tool.ts）。
  */
 
-import { mkdirSync, realpathSync, rmSync } from 'node:fs'
+import { mkdirSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 import { llmCompleterOf, llmServiceOf, resolveDataDir } from './adapter.ts'
 import type { ChunkOptions } from './core/chunker.ts'
@@ -259,7 +260,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     if (running !== undefined && running.phase !== 'done' && running.phase !== 'error') {
       return { started: false }
     }
-    if (kb.roots.length === 0) {
+    const notesDir = this.notesDirOf(kb)
+    if (kb.roots.length === 0 && !existsSync(notesDir)) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
     const llm = this.completer()
@@ -283,7 +285,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     const controller = new AbortController()
     this.controllers.set(kb.id, controller)
     const cfg: IngestConfig = {
-      authorizedRoots: [...kb.roots],
+      // notes 目录存在才并入（为空/未用面板补充的库不产生空目录）
+      authorizedRoots: [...kb.roots, ...(existsSync(notesDir) ? [notesDir] : [])],
       roots: opts.roots,
       excludes: this.config.excludes,
       chunk: this.config.chunk,
@@ -388,7 +391,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
 
   async index(target: KbRef, opts: IndexOptions, signal: AbortSignal): Promise<IndexReport> {
     const kb = this.resolveKb(target)
-    if (kb.roots.length === 0) {
+    const notesDir = this.notesDirOf(kb)
+    if (kb.roots.length === 0 && !existsSync(notesDir)) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
     const llm = this.completer()
@@ -403,7 +407,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       for (const q of store.quarantineList()) store.quarantineResolve(q.id)
     }
     const cfg: IngestConfig = {
-      authorizedRoots: [...kb.roots],
+      // notes 目录存在才并入（为空/未用面板补充的库不产生空目录）
+      authorizedRoots: [...kb.roots, ...(existsSync(notesDir) ? [notesDir] : [])],
       roots: opts.roots,
       excludes: this.config.excludes,
       chunk: this.config.chunk,
@@ -481,6 +486,53 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       confidence: x.relation.confidence,
       evidence: store.relationEvidence(x.relation.id).map(ev => ({ path: ev.path, startLine: ev.startLine, endLine: ev.endLine, text: ev.text })),
     }))
+  }
+
+  /** 面板补充知识的落地目录（provider 托管，索引时并入授权根）。 */
+  private notesDirOf(kb: { readonly id: string }): string {
+    return join(this.config.dataDir, 'kbs', kb.id, 'notes')
+  }
+
+  /** 补充新知识：用户粘贴文本落为笔记文件并后台增量索引。 */
+  addTextKnowledge(target: KbRef, title: string, text: string): { readonly file: string; readonly started: boolean } {
+    const kb = this.resolveKb(target)
+    const cleanTitle = title.trim() !== '' ? title.trim() : '补充知识'
+    const slug = cleanTitle.replaceAll(/[\\/:*?"<>|\s]+/g, '-').slice(0, 40)
+    const dir = this.notesDirOf(kb)
+    mkdirSync(dir, { recursive: true })
+    const file = join(dir, `${Date.now()}-${slug}.md`)
+    writeFileSync(file, `# ${cleanTitle}\n\n${text}\n`, 'utf8')
+    let started = false
+    try {
+      started = this.indexBackground({ id: kb.id }, {}).started
+    } catch { /* 模型不可用等：文件已落，下次索引自动收编 */ }
+    return { file, started }
+  }
+
+  /** 已入库来源清单（含陈旧/失败，供面板管理）。isNote 用 realpath 比较
+   * （scanner 存 realpath，而 notesDir 未经解析——macOS /var 符号差异）。 */
+  listKnowledge(target: KbRef): readonly { readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean }[] {
+    const kb = this.resolveKb(target)
+    const raw = this.notesDirOf(kb)
+    const notesDir = existsSync(raw) ? realpathSync(raw) : raw
+    return this.storeOf(kb).listSources().map(s => ({
+      path: s.path,
+      absPath: s.absPath,
+      state: s.state,
+      isNote: s.absPath.startsWith(notesDir),
+    }))
+  }
+
+  /** 删除旧知识：整文件图谱级联清除；笔记文件同时删除物理文件。 */
+  async forgetKnowledge(target: KbRef, path: string): Promise<{ readonly deleted: { chunks: number; relations: number; entities: number } }> {
+    const kb = this.resolveKb(target)
+    const raw = this.notesDirOf(kb)
+    const notesDir = existsSync(raw) ? realpathSync(raw) : raw
+    const src = this.storeOf(kb).getSource(path)
+    if (src !== null && src.absPath.startsWith(notesDir) && existsSync(src.absPath)) {
+      rmSync(src.absPath)
+    }
+    return this.forget({ id: kb.id }, { kind: 'file', path }).then(report => ({ deleted: report.deleted }))
   }
 
   /** 选区更正建议：对用户滑选的原文片段跑同款 SPO 抽取，返回候选三元组

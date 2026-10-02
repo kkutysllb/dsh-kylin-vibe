@@ -36,6 +36,9 @@ describe('GraphRagServiceImpl', () => {
     browseEntities: () => [],
     sampleForReview: () => [],
     correctFromSelection: async () => ({ triples: [] }),
+    listKnowledge: () => [],
+    addTextKnowledge: () => ({ file: '', started: false }),
+    forgetKnowledge: async () => ({ deleted: { chunks: 0, relations: 0, entities: 0 } }),
     reviewRelation: () => ({ excluded: false, corrected: false }),
     healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
   })
@@ -188,6 +191,28 @@ describe('LocalGraphRagProvider v2（多知识库）', () => {
     } finally {
       p.dispose()
     }
+  })
+
+  test('addTextKnowledge → listKnowledge → forgetKnowledge（llm 在场：落文件并启动索引）', async () => {
+    const p = makeProvider()
+    const kb = p.createKb({ name: '笔记库', roots: [] })
+    const r = p.addTextKnowledge({ id: kb.id }, '补充知识一', '智算中心按节点规模定容量。')
+    const fs = await import('node:fs')
+    assert.ok(fs.existsSync(r.file), '笔记文件已落盘')
+    // oracle LLM 同步完成：轮询至后台索引 done，来源清单应收编笔记
+    for (let i = 0; i < 200; i++) {
+      const prog = p.progress(kb.id)
+      if (prog?.phase === 'done') break
+      if (prog?.phase === 'error') throw new Error(prog.error ?? '后台索引失败')
+      await new Promise(resolve => { setTimeout(resolve, 20) })
+    }
+    const list = p.listKnowledge({ id: kb.id })
+    assert.equal(list.length, 1)
+    assert.equal(list[0]!.isNote, true)
+    const gone = p.forgetKnowledge({ id: kb.id }, list[0]!.path)
+    const report = await gone
+    assert.ok(report.deleted.chunks >= 1, '图谱数据级联清除')
+    assert.ok(!fs.existsSync(r.file), '笔记物理文件同步删除')
   })
 
   test('createKb → index → query（kb 显式指定）→ traverse → forget', async () => {

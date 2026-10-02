@@ -218,7 +218,7 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
         <button className='gv-btn' onClick={() => setExploreOpen(open => !open)}>{exploreOpen ? t('closeExplore') : t('explore')}</button>
         {kb.managed !== 'config' && <button className='gv-btn gv-btn-danger' onClick={remove}>{t('delete')}</button>}
       </div>
-      {exploreOpen && <BrowseReviewView runtime={runtime} t={t} kbId={kb.id} />}
+      {exploreOpen && <BrowseReviewView runtime={runtime} t={t} kbId={kb.id} roots={kb.roots} />}
     </div>
   )
 }

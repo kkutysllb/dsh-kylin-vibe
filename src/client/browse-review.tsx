@@ -57,15 +57,16 @@ function ChunkText(props: { readonly text: string; readonly t: Translate }): Rea
   )
 }
 
-type TabKind = 'browse' | 'review' | 'health'
+type TabKind = 'browse' | 'review' | 'health' | 'manage'
 
-export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string }): React.ReactElement {
-  const { runtime, t, kbId } = props
+export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string; readonly roots: readonly string[] }): React.ReactElement {
+  const { runtime, t, kbId, roots } = props
   const [tab, setTab] = useState<TabKind>('browse')
   const tabs: { readonly kind: TabKind; readonly label: string }[] = [
     { kind: 'browse', label: t('tabBrowse') },
     { kind: 'review', label: t('tabReview') },
     { kind: 'health', label: t('tabHealth') },
+    { kind: 'manage', label: t('tabManage') },
   ]
   return (
     <div>
@@ -77,6 +78,7 @@ export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly 
       {tab === 'browse' && <BrowseTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'review' && <ReviewTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'health' && <HealthTab runtime={runtime} t={t} kbId={kbId} />}
+      {tab === 'manage' && <ManageTab runtime={runtime} t={t} kbId={kbId} roots={roots} />}
     </div>
   )
 }
@@ -273,6 +275,102 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
             onClick={() => seedFromSelection(selChip.text)}
           >{t('selCorrect')}</button>
         )}
+      </div>
+    </div>
+  )
+}
+
+/** 知识管理：补充新知识（粘贴文本入库）/ 来源清单（按文件删除）/ 授权目录编辑。 */
+function ManageTab(props: {
+  readonly runtime: KbRuntime
+  readonly t: Translate
+  readonly kbId: string
+  readonly roots: readonly string[]
+}): React.ReactElement {
+  const { runtime, t, kbId, roots } = props
+  const [title, setTitle] = useState('')
+  const [text, setText] = useState('')
+  const [sources, setSources] = useState<readonly { path: string; state: string; isNote: boolean }[]>([])
+  const [rootsText, setRootsText] = useState(roots.join('\n'))
+  const [rootsSaved, setRootsSaved] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const loadSources = (): void => {
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'sources', { id: kbId }))
+      .then(v => setSources(v as readonly { path: string; state: string; isNote: boolean }[]))
+      .catch(err => runtime.pushNotice(String(err)))
+  }
+  useEffect(() => { loadSources() }, [kbId])
+
+  const addText = (): void => {
+    if (text.trim() === '') return
+    setBusy(true)
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'addText', { id: kbId, title: title.trim(), text }))
+      .then(() => {
+        runtime.pushNotice(t('manageNoteAdded'))
+        setTitle('')
+        setText('')
+        loadSources()
+      })
+      .catch(err => runtime.pushNotice(String(err)))
+      .finally(() => setBusy(false))
+  }
+
+  const removeSource = (path: string): void => {
+    // eslint-disable-next-line no-alert
+    if (!window.confirm(t('manageConfirmDelete'))) return
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'forgetFile', { id: kbId, path }))
+      .then(() => { runtime.pushNotice(t('manageFileDeleted')); loadSources() })
+      .catch(err => runtime.pushNotice(String(err)))
+  }
+
+  const saveRoots = (): void => {
+    const next = rootsText.split('\n').map(l => l.trim()).filter(l => l !== '')
+    setBusy(true)
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'updateKb', { id: kbId, roots: next }))
+      .then(() => { setRootsSaved(true); setTimeout(() => setRootsSaved(false), 2000) })
+      .catch(err => runtime.pushNotice(String(err)))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <div>
+      <div className='gv-card'>
+        <div className='gv-card-head'><span className='gv-name'>{t('manageAddTitle')}</span></div>
+        <label>{t('manageAddName')}</label>
+        <input value={title} onChange={e => setTitle(e.target.value)} />
+        <label>{t('manageAddText')}</label>
+        <textarea value={text} onChange={e => setText(e.target.value)} style={{ minHeight: 90 }} />
+        <div className='gv-actions'>
+          <button className='gv-btn gv-btn-primary' disabled={busy || text.trim() === ''} onClick={addText}>{t('manageAddSubmit')}</button>
+        </div>
+      </div>
+
+      <div className='gv-card'>
+        <div className='gv-card-head'><span className='gv-name'>{t('manageSources')}</span></div>
+        {sources.length === 0 && <div className='gv-empty'>{t('manageEmpty')}</div>}
+        <table className='gv-table'>
+          <tbody>
+            {sources.map(s => (
+              <tr key={s.path}>
+                <td style={{ wordBreak: 'break-all' }}>
+                  {s.path}
+                  {s.isNote && <span className='gv-badge' style={{ marginLeft: 6 }}>{t('tabManage')}</span>}
+                </td>
+                <td style={{ width: 70 }}>{s.state}</td>
+                <td style={{ width: 60 }}><button className='gv-btn gv-btn-danger' onClick={() => removeSource(s.path)}>{t('manageDelete')}</button></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <div className='gv-card'>
+        <div className='gv-card-head'><span className='gv-name'>{t('manageRootsTitle')}</span></div>
+        <textarea value={rootsText} onChange={e => { setRootsText(e.target.value); setRootsSaved(false) }} style={{ minHeight: 60 }} />
+        <div className='gv-actions'>
+          <button className='gv-btn' disabled={busy} onClick={saveRoots}>{rootsSaved ? t('manageRootsSaved') : t('manageRootsSave')}</button>
+        </div>
       </div>
     </div>
   )

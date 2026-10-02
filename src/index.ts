@@ -109,7 +109,14 @@ export interface GraphRagProvider {
   // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
   sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
+  /** 已入库来源清单（面板知识管理）。 */
+  listKnowledge(target: KbRef): readonly { readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean }[]
+  /** 补充新知识：粘贴文本落为笔记文件并后台增量索引。 */
+  addTextKnowledge(target: KbRef, title: string, text: string): { readonly file: string; readonly started: boolean }
+  /** 删除旧知识：按文件级联清除；笔记文件同时删物理文件。 */
+  forgetKnowledge(target: KbRef, path: string): Promise<{ readonly deleted: { chunks: number; relations: number; entities: number } }>
   /** 选区更正建议：对滑选原文跑 SPO 抽取返回候选三元组（面板更正预填）。 */
+
   correctFromSelection(target: KbRef | undefined, text: string): Promise<{ readonly triples: ReadonlyArray<{ s: string; r: string; o: string }> }>
   reviewRelation(
     target: KbRef,

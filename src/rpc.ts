@@ -222,6 +222,22 @@ export async function handleKbRpc(
         const limit = Math.min(Math.max(Number(body['limit'] ?? 20) || 20, 1), 50)
         return ok(provider.sampleForReview({ id }, limit))
       }
+      case 'sources': {
+        const id = string(body['id'], 'id', 120)
+        return ok(provider.listKnowledge({ id }))
+      }
+      case 'forgetFile': {
+        const id = string(body['id'], 'id', 120)
+        const path = string(body['path'], 'path', 400)
+        return ok(await provider.forgetKnowledge({ id }, path))
+      }
+      case 'addText': {
+        const id = string(body['id'], 'id', 120)
+        const title = string(body['title'], 'title', 120)
+        const text = string(body['text'], 'text', 50000)
+        if (text.trim() === '') return fail('INVALID', 'text must not be empty')
+        return ok(provider.addTextKnowledge({ id }, title, text))
+      }
       case 'correctFromSelection': {
         const text = string(body['text'], 'text', 2000)
         return ok(await provider.correctFromSelection(typeof body['id'] === 'string' ? { id: body['id'] } : undefined, text))
