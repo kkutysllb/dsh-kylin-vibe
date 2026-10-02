@@ -8,9 +8,9 @@
 import { mkdirSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { llmCompleterOf, llmServiceOf, resolveDataDir } from './adapter.ts'
+import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf } from './adapter.ts'
 import type { ChunkOptions } from './core/chunker.ts'
-import { extractChunk, type LlmCompleter } from './core/extractor.ts'
+import { extractChunk, type LlmCompleter, type VisionCompleter } from './core/extractor.ts'
 import { runIngest, type CommunitySummarizer, type IngestConfig } from './core/ingest.ts'
 import { KbRegistry, migrateLegacyWorkspaces } from './core/kb.ts'
 import { SqliteGraphStore } from './core/graphstore.ts'
@@ -164,6 +164,20 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return this.cachedLlm
   }
 
+  /** 视觉链路（可选）：附件服务/模型不支持时为 null（ingest 据此降级）。 */
+  private cachedVision: VisionCompleter | null | undefined
+  private visionOf(): VisionCompleter | null {
+    if (this.cachedVision !== undefined) return this.cachedVision
+    const ctx = this.deps.ctx
+    const model = this.config.model
+    if (ctx === null || model === null) {
+      this.cachedVision = null
+      return null
+    }
+    this.cachedVision = visionCompleterOf(ctx, model, this.config.retry)
+    return this.cachedVision
+  }
+
   // ── KB 管理面 ─────────────────────────────────────────────────────────────
 
   listKbs(): readonly KnowledgeBase[] {
@@ -293,7 +307,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       extract: this.config.extract,
       community: this.config.community,
     }
-    void runIngest(store, cfg, { llm, summarize: summarizerOf(llm) }, controller.signal, p => {
+    void runIngest(store, cfg, { llm, summarize: summarizerOf(llm), vision: this.visionOf() ?? undefined }, controller.signal, p => {
       record.phase = p.phase
       record.filesDone = p.filesDone
       record.filesTotal = p.filesTotal
@@ -415,7 +429,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       extract: this.config.extract,
       community: this.config.community,
     }
-    const report = await runIngest(store, cfg, { llm, summarize: summarizerOf(llm) }, signal)
+    const report = await runIngest(store, cfg, { llm, summarize: summarizerOf(llm), vision: this.visionOf() ?? undefined }, signal)
     const finished = Date.now()
     store.setMeta('last-index-at', String(finished))
     this.registry.touchIndexed(kb.id, finished)

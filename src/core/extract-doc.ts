@@ -62,7 +62,7 @@ function xmlTexts(xml: string, tagName: string): string[] {
   const out: string[] = []
   const re = new RegExp(`<${tagName}(?:\\s[^>]*)?>([\\s\\S]*?)</${tagName}>`, 'g')
   let m: RegExpExecArray | null
-  while ((m = re.exec(xml)) !== null) out.push(decodeXmlEntities(m[1]))
+  while ((m = re.exec(xml)) !== null) out.push(decodeXmlEntities(m[1]!))
   return out
 }
 
@@ -73,7 +73,7 @@ function extractDocx(xml: string): string {
   const re = /<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/g
   let m: RegExpExecArray | null
   while ((m = re.exec(xml)) !== null) {
-    const runs = xmlTexts(m[1], 'w:t').join('')
+    const runs = xmlTexts(m[1]!, 'w:t').join('')
     if (runs.trim() !== '') paras.push(runs.trim())
   }
   return paras.join('\n')
@@ -87,12 +87,12 @@ function extractPptx(files: Record<string, Uint8Array>): string {
     .sort((a, b) => slideNo(a) - slideNo(b))
   const pages: string[] = []
   for (const name of slideNames) {
-    const xml = strFromU8(files[name])
+    const xml = strFromU8(files[name]!)
     const paras: string[] = []
     const re = /<a:p(?:\s[^>]*)?>([\s\S]*?)<\/a:p>/g
     let m: RegExpExecArray | null
     while ((m = re.exec(xml)) !== null) {
-      const runs = xmlTexts(m[1], 'a:t').join('')
+      const runs = xmlTexts(m[1]!, 'a:t').join('')
       if (runs.trim() !== '') paras.push(runs.trim())
     }
     if (paras.length > 0) pages.push(`[幻灯片 ${slideNo(name)}]\n${paras.join('\n')}`)
@@ -106,21 +106,16 @@ function slideNo(name: string): number {
 
 // ── XLSX：xl/sharedStrings.xml + xl/worksheets/sheetN.xml 行列重建 ──────────
 
-interface XlsxCell {
-  readonly t: string   // 类型（s=共享字符串，inlineStr=内联，其余按值）
-  readonly v: string   // 值（已解码）
-}
-
 function extractXlsx(files: Record<string, Uint8Array>): string {
   // 共享字符串表（可选部件）
   let shared: string[] = []
   const sstRaw = files['xl/sharedStrings.xml']
   if (sstRaw !== undefined) {
-    const sst = strFromU8(sstRaw)
+    const sst = strFromU8(sstRaw!)
     // 每个 <si> 的可见文本 = 其全部 <t> 拼接（富文本 si 含多段 r/t）
     const siRe = /<si(?:\s[^>]*)?>([\s\S]*?)<\/si>/g
     let m: RegExpExecArray | null
-    while ((m = siRe.exec(sst)) !== null) shared.push(xmlTexts(m[1], 't').join(''))
+    while ((m = siRe.exec(sst)) !== null) shared.push(xmlTexts(m[1]!, 't').join(''))
   }
 
   const sheetNames = Object.keys(files)
@@ -129,7 +124,7 @@ function extractXlsx(files: Record<string, Uint8Array>): string {
   const pages: string[] = []
   const MAX_ROWS = 2000
   for (const name of sheetNames) {
-    const xml = strFromU8(files[name])
+    const xml = strFromU8(files[name]!)
     const rows: string[] = []
     const rowRe = /<row(?:\s[^>]*)?>([\s\S]*?)<\/row>/g
     let rm: RegExpExecArray | null
@@ -137,7 +132,7 @@ function extractXlsx(files: Record<string, Uint8Array>): string {
       const cells: string[] = []
       const cRe = /<c(?:\s([^>]*?))?\s*\/?>(?:([\s\S]*?)<\/c>)?/g
       let cm: RegExpExecArray | null
-      while ((cm = cRe.exec(rm[1])) !== null) {
+      while ((cm = cRe.exec(rm[1]!)) !== null) {
         const attrs = cm[1] ?? ''
         const inner = cm[2] ?? ''
         const type = attrs.match(/\bt="([^"]+)"/)?.[1] ?? ''
@@ -197,7 +192,7 @@ export async function extractDocText(absPath: string, sizeBytes: number): Promis
       if (ext === '.docx') {
         const doc = files['word/document.xml']
         if (doc === undefined) return { kind: 'failed', reason: '损坏的 docx（缺 word/document.xml）' }
-        text = extractDocx(strFromU8(doc))
+        text = extractDocx(strFromU8(doc!))
       } else if (ext === '.pptx') {
         text = extractPptx(files)
       } else if (ext === '.xlsx') {

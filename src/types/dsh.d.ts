@@ -12,10 +12,16 @@
  */
 
 declare module '@deepseek-ai/cordis' {
-  /** 辅助调用请求：request-only 用户输入（非会话记录，0203 §1.5 纪律）。 */
+  /** 辅助调用请求：request-only 用户输入（非会话记录，0203 §1.5 纪律）。
+   * image 块：宿主 pi-ai/deepseek 路线原生视觉输入（attachment 为持久
+   * ImageAttachmentRef，0.2.0 实测 llm-pi-ai/src/adapter.ts 内容装配）。 */
   interface GraphRagLlmMessage {
     readonly role: 'system' | 'user' | 'assistant'
-    readonly content: readonly (string | { readonly type: 'text'; readonly text: string })[]
+    readonly content: readonly (
+      | string
+      | { readonly type: 'text'; readonly text: string }
+      | { readonly type: 'image'; readonly attachment: unknown }
+    )[]
   }
 
   interface GraphRagLlmStreamOptions {

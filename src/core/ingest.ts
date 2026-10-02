@@ -11,7 +11,7 @@ import { readFileSync } from 'node:fs'
 import { chunkText, type ChunkOptions } from './chunker.ts'
 import { DOC_EXTRACT_EXTS, extOf, extractDocText, IMAGE_EXTS, imageMimeOf, LEGACY_EXTS } from './extract-doc.ts'
 import { computeMentions, extractChunk, extractImage, type LlmCompleter, type VisionCompleter } from './extractor.ts'
-import { normName } from './types.ts'
+import { normName, type ExtractedItem } from './types.ts'
 import type { ExtractionDelta, SqliteGraphStore } from './graphstore.ts'
 import { recomputeCommunities } from './lpa.ts'
 import { diffAgainstIndex, scanRoots } from './scanner.ts'
@@ -53,6 +53,14 @@ export interface IngestProgress {
   readonly filesTotal: number
   readonly currentFile?: string
   readonly quarantined: number
+}
+
+/** 图片视觉抽取结果 → 合成正文（实体/关系清单；mention 与证据语义与文本一致）。 */
+function renderImageText(items: ExtractedItem): string {
+  const lines: string[] = []
+  for (const e of items.entities) lines.push(`${e.n}（${e.t}）${e.d !== null ? `：${e.d}` : ''}`)
+  for (const r of items.relations) lines.push(`${r.s} —${r.r}→ ${r.o}${r.d !== null ? `：${r.d}` : ''}`)
+  return lines.join('\n')
 }
 
 /** 二进制启发：NUL 字节视为二进制跳过（skipped 计数）。 */
@@ -111,6 +119,93 @@ export async function runIngest(
   const dirty = [...diff.added, ...diff.changed, ...resume]
   onProgress?.({ phase: 'scanning', filesDone: 0, filesTotal: dirty.length, quarantined: 0 })
   let done = 0
+
+  /** 共享管线 C+D+E：分块 → 逐 chunk 抽取 → 归并（文本/抽取文档共用）。
+   * `precomputed`（图片路径）：视觉模型已产出 SPO，跳过文本二次抽取，
+   * 仅分块+按 mention 精确归并（实体随名落 chunk、关系只挂首个命中 chunk）。
+   * 返回文件级结果；abort 由调用方统一收尾（source 回 pending）。 */
+  const runPipeline = async (
+    srcId: number,
+    f: { readonly path: string },
+    text: string,
+    precomputed?: { readonly items: ExtractedItem },
+  ): Promise<{
+    aborted: boolean; fileFailed: boolean; fileQuarantined: boolean
+    llmCalls: number; tokensIn: number; tokensOut: number; quarantined: number
+  }> => {
+    const chunks = chunkText(f.path, text, cfg.chunk)
+    store.replaceChunks(srcId, chunks.map(c => ({
+      ordinal: c.ordinal, startLine: c.startLine, endLine: c.endLine,
+      startCol: c.startCol, endCol: c.endCol, text: c.text, tokenEst: c.tokenEst,
+    })))
+    store.setSourceState(srcId, 'extracting')
+    let fileFailed = false
+    let fileQuarantined = false
+    let q = 0
+    let llmCalls = 0
+    let tokensIn = 0
+    let tokensOut = 0
+
+    if (precomputed !== undefined) {
+      const all = precomputed.items
+      const pendingRels = [...all.relations]
+      for (const chunkRow of store.getChunks(srcId)) {
+        const names = all.entities.filter(e => chunkRow.text.includes(e.n)).map(e => e.n)
+        const hitRels = pendingRels.filter(r => chunkRow.text.includes(r.s) || chunkRow.text.includes(r.o))
+        for (const r of hitRels) pendingRels.splice(pendingRels.indexOf(r), 1)
+        if (names.length === 0 && hitRels.length === 0) continue
+        const delta: ExtractionDelta = {
+          sourceId: srcId, chunkId: chunkRow.id,
+          entities: all.entities.filter(e => names.includes(e.n)).map(e => ({ normName: normName(e.n), name: e.n, type: e.t, description: e.d, confidence: e.c })),
+          relations: hitRels.map(r => ({ srcNorm: normName(r.s), dstNorm: normName(r.o), type: r.r, description: r.d, confidence: r.c })),
+          mentions: computeMentions(chunkRow.text, names),
+        }
+        store.applyExtraction(delta)
+      }
+      tokensIn = estTokens(text)
+      return { aborted: false, fileFailed, fileQuarantined, llmCalls, tokensIn, tokensOut, quarantined: q }
+    }
+
+    for (const chunkRow of store.getChunks(srcId)) {
+      if (signal?.aborted) return { aborted: true, fileFailed, fileQuarantined, llmCalls, tokensIn, tokensOut, quarantined: q }
+      const res = await extractChunk(deps.llm, chunkRow.text, f.path, cfg.extract, signal)
+      llmCalls += res.llmCalls
+      tokensIn += estTokens(chunkRow.text)
+      tokensOut += estTokens(res.ok ? '' : res.rawOutput ?? '')
+      if (!res.ok && signal?.aborted) return { aborted: true, fileFailed, fileQuarantined, llmCalls, tokensIn, tokensOut, quarantined: q }
+      if (res.ok) {
+        // E：归并（mention span 由实体名定位）
+        const names = res.items.entities.map(e => e.n)
+        const delta: ExtractionDelta = {
+          sourceId: srcId, chunkId: chunkRow.id,
+          entities: res.items.entities.map(e => ({ normName: normName(e.n), name: e.n, type: e.t, description: e.d, confidence: e.c })),
+          relations: res.items.relations.map(r => ({ srcNorm: normName(r.s), dstNorm: normName(r.o), type: r.r, description: r.d, confidence: r.c })),
+          mentions: computeMentions(chunkRow.text, names),
+        }
+        store.applyExtraction(delta)
+      } else if (res.errorCode === 'EMPTY') {
+        // 合法无内容：跳过不落隔离区
+      } else {
+        q++
+        fileQuarantined = fileQuarantined || res.errorCode === 'PARSE_FAILED'
+        fileFailed = fileFailed || res.errorCode === 'LLM_ERROR'
+        store.quarantinePut(chunkRow.id, chunkRow.text, res.rawOutput, res.errorCode, res.detail)
+      }
+    }
+    return { aborted: false, fileFailed, fileQuarantined, llmCalls, tokensIn, tokensOut, quarantined: q }
+  }
+
+  /** 管线结果 → source 终态 + 成本/隔离入账。 */
+  const finishPipeline = (srcId: number, r: Awaited<ReturnType<typeof runPipeline>>): void => {
+    cost.llmCalls += r.llmCalls
+    cost.tokensIn += r.tokensIn
+    cost.tokensOut += r.tokensOut
+    quarantined += r.quarantined
+    if (r.fileFailed) store.setSourceState(srcId, 'failed', 'LLM_ERROR')
+    else if (r.fileQuarantined) store.setSourceState(srcId, 'quarantined')
+    else store.setSourceState(srcId, 'merged')
+  }
+
   for (const f of dirty) {
     if (signal?.aborted) { aborted = true; break }
     onProgress?.({ phase: 'extracting', filesDone: done, filesTotal: dirty.length, currentFile: f.path, quarantined })
@@ -133,31 +228,33 @@ export async function runIngest(
         { data: new Uint8Array(readFileSync(f.absPath)), mime, name: f.path.split('/').pop() ?? f.path },
         f.path, cfg.extract, signal,
       )
-      if (applyImageExtraction(store, src.id, f.path, imageRes)) {
-        store.setSourceState(src.id, 'merged')
-      } else {
-        store.setSourceState(src.id, 'failed', `vision-${imageRes.errorCode}：${imageRes.detail}`)
-      }
       cost.llmCalls += imageRes.llmCalls
+      if (!imageRes.ok) {
+        // 图片无 chunk 可隔离：失败原因直落 source 状态
+        store.setSourceState(src.id, 'failed', `vision-${imageRes.errorCode}：${imageRes.detail}`)
+        done++
+        continue
+      }
+      // 视觉抽取结果作为预计算 SPO 直接入图（合成正文仅作 chunk/证据载体，不二次抽取）
+      const imageText = renderImageText(imageRes.items)
+      const r = await runPipeline(src.id, f, imageText, { items: imageRes.items })
+      if (r.aborted) { aborted = true; store.setSourceState(src.id, 'pending'); done++; break }
+      finishPipeline(src.id, r)
       done++
       continue
     }
     if (DOC_EXTRACT_EXTS.has(ext) || LEGACY_EXTS.has(ext)) {
       const doc = await extractDocText(f.absPath, f.sizeBytes)
-      if (doc.kind === 'unsupported') {
+      if (doc.kind !== 'text') {
+        // unsupported（旧格式）与 failed（损坏/扫描件/超限）都直落 source 状态
         store.setSourceState(src.id, 'failed', doc.reason)
         skipped++
         done++
         continue
       }
-      if (doc.kind === 'failed') {
-        store.setSourceState(src.id, 'failed', doc.reason)
-        skipped++
-        done++
-        continue
-      }
-      // 抽取成功 → 以抽取文本走通用分块/抽取管线（落到下方 text 路径）
-      await ingestText(store, cfg, deps, f, src, doc.text, signal, (phase) => { if (phase === 'abort') aborted = true }, (n) => { cost.llmCalls += n; return true }, (q) => { quarantined += q; if (q) fileFlags.failed = false })
+      const r = await runPipeline(src.id, f, doc.text)
+      if (r.aborted) { aborted = true; store.setSourceState(src.id, 'pending'); done++; break }
+      finishPipeline(src.id, r)
       done++
       continue
     }
@@ -169,50 +266,9 @@ export async function runIngest(
       done++
       continue
     }
-    const text = buf.toString('utf8')
-
-    // C：分块（replaceChunks 自带 FTS 同步）
-    const chunks = chunkText(f.path, text, cfg.chunk)
-    store.replaceChunks(src.id, chunks.map(c => ({
-      ordinal: c.ordinal, startLine: c.startLine, endLine: c.endLine,
-      startCol: c.startCol, endCol: c.endCol, text: c.text, tokenEst: c.tokenEst,
-    })))
-    store.setSourceState(src.id, 'extracting')
-
-    // D：逐 chunk 抽取（每 chunk ≤2 次调用）
-    let fileFailed = false
-    let fileQuarantined = false
-    for (const chunkRow of store.getChunks(src.id)) {
-      if (signal?.aborted) break
-      const res = await extractChunk(deps.llm, chunkRow.text, f.path, cfg.extract, signal)
-      cost.llmCalls += res.llmCalls
-      cost.tokensIn += estTokens(chunkRow.text)
-      cost.tokensOut += estTokens(res.ok ? '' : res.rawOutput ?? '')
-      if (!res.ok && signal?.aborted) { aborted = true; break } // 中断不进隔离区
-      if (res.ok) {
-        // E：归并（mention span 由实体名定位）
-        const names = res.items.entities.map(e => e.n)
-        const delta: ExtractionDelta = {
-          sourceId: src.id, chunkId: chunkRow.id,
-          entities: res.items.entities.map(e => ({ normName: normName(e.n), name: e.n, type: e.t, description: e.d, confidence: e.c })),
-          relations: res.items.relations.map(r => ({ srcNorm: normName(r.s), dstNorm: normName(r.o), type: r.r, description: r.d, confidence: r.c })),
-          mentions: computeMentions(chunkRow.text, names),
-        }
-        store.applyExtraction(delta)
-      } else if (res.errorCode === 'EMPTY') {
-        // 合法无内容：跳过不落隔离区
-      } else {
-        quarantined++
-        fileQuarantined = fileQuarantined || res.errorCode === 'PARSE_FAILED'
-        fileFailed = fileFailed || res.errorCode === 'LLM_ERROR'
-        store.quarantinePut(chunkRow.id, chunkRow.text, res.rawOutput, res.errorCode, res.detail)
-      }
-    }
-
-    if (signal?.aborted) { aborted = true; store.setSourceState(src.id, 'pending'); break }
-    if (fileFailed) store.setSourceState(src.id, 'failed', 'LLM_ERROR')
-    else if (fileQuarantined) store.setSourceState(src.id, 'quarantined')
-    else store.setSourceState(src.id, 'merged')
+    const r = await runPipeline(src.id, f, buf.toString('utf8'))
+    if (r.aborted) { aborted = true; store.setSourceState(src.id, 'pending'); done++; break }
+    finishPipeline(src.id, r)
     done++
   }
 

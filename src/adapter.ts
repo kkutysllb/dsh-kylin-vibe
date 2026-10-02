@@ -168,3 +168,71 @@ export function llmCompleterOf(
     },
   }
 }
+
+/** 图片附件的最小形状（核心层不感知附件服务契约，这里只做透明传递）。 */
+export type VisionRef = unknown
+
+export interface VisionDeps {
+  readonly attachments: {
+    saveImages(inputs: readonly { data: Uint8Array; mediaType: string; name?: string }[]): Promise<readonly unknown[]>
+  }
+  readonly llm: NonNullable<ReturnType<typeof llmServiceOf>>
+}
+
+/** 宿主视觉链路 → 核心库 VisionCompleter：
+ * 图片经 attachments.saveImages 成为持久引用（ImageAttachmentRef），
+ * llm stream 以 `{type:'image', attachment}` 内容块随 user 消息发送
+ * （pi-ai/deepseek 路线原生支持；模型需具备 image 输入能力）。
+ * 附件服务缺席返回 null——ingest 据此降级（failed/vision-unavailable）。 */
+export function visionCompleterOf(ctx: Context, route: LlmRoute, policy: LlmRetryPolicy = {}): (import('./core/extractor.ts').VisionCompleter) | null {
+  const maxRetries = policy.rateLimitRetries ?? 1
+  const baseDelay = policy.baseDelayMs ?? 500
+  // 创建期一次性解析（同 llmCompleterOf 纪律）：附件与 llm 服务缺席 → null
+  let attachments: VisionDeps['attachments'] | null = null
+  try {
+    attachments = (ctx.reflect?.get?.('attachments', false) ?? null) as VisionDeps['attachments'] | null
+  } catch {
+    attachments = null
+  }
+  const llm = llmServiceOf(ctx)
+  if (attachments === null || attachments === undefined || llm === null || llm === undefined) return null
+  const llmSvc: NonNullable<typeof llm> = llm
+
+  const streamOnce = async (system: string, user: string, ref: unknown, signal?: AbortSignal): Promise<string> => {
+    const stream = llmSvc.stream({
+      provider: route.provider,
+      model: route.model,
+      maxTokens: route.maxTokens,
+      messages: [
+        { role: 'system', content: [{ type: 'text', text: system }] },
+        { role: 'user', content: [
+          { type: 'text', text: user },
+          { type: 'image', attachment: ref },
+        ] },
+      ],
+      signal,
+    })
+    let out = ''
+    let failure: { code?: string; message?: string } | undefined
+    for await (const chunk of stream) {
+      const text = chunkText(chunk)
+      if (text !== undefined) { out += text; continue }
+      const f = chunkFailure(chunk)
+      if (f !== undefined) failure = f
+    }
+    if (failure === undefined) return out
+    if (failure.code === 'RATE_LIMIT' && maxRetries > 0) {
+      await new Promise<void>(resolve => setTimeout(resolve, baseDelay))
+      return streamOnce(system, user, ref, signal)
+    }
+    throw mapLlmFailure(failure.code, failure.message)
+  }
+
+  return {
+    save: async ({ data, mime, name }) => {
+      const refs = await attachments!.saveImages([{ data, mediaType: mime, name }])
+      return refs[0]
+    },
+    complete: (system, user, ref, signal) => streamOnce(system, user, ref, signal),
+  }
+}
