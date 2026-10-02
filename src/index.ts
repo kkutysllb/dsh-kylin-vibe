@@ -79,6 +79,7 @@ export interface HealthReport {
   readonly quarantineRate: number | null
   readonly sampled: number
   readonly correct: number
+  readonly corrected: number
   readonly samplePrecision: number | null
   readonly excludedRelations: number
   readonly lastIndexAt: number | null
@@ -108,7 +109,12 @@ export interface GraphRagProvider {
   // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
   sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
-  reviewRelation(target: KbRef, relationId: number, verdict: 'correct' | 'wrong' | 'unsure'): { readonly excluded: boolean }
+  reviewRelation(
+    target: KbRef,
+    relationId: number,
+    verdict: 'correct' | 'wrong' | 'unsure',
+    correction?: { readonly s?: string; readonly r?: string; readonly o?: string },
+  ): { readonly excluded: boolean; readonly corrected: boolean }
   healthReport(target: KbRef): HealthReport
 }
 

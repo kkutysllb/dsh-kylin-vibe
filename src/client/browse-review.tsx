@@ -143,6 +143,8 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   const [loading, setLoading] = useState(true)
   const [idx, setIdx] = useState(0)
   const [done, setDone] = useState(0)
+  /** 更正编辑器：非空 = 错误/存疑后展开（预填当前三元组），携带待提交判定。 */
+  const [correcting, setCorrecting] = useState<{ readonly verdict: 'wrong' | 'unsure'; readonly s: string; readonly r: string; readonly o: string } | null>(null)
 
   const load = (): void => {
     setLoading(true)
@@ -153,11 +155,21 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   }
   useEffect(() => { load() }, [kbId])
 
-  const verdict = (v: 'correct' | 'wrong' | 'unsure'): void => {
+  const verdict = (v: 'correct' | 'wrong' | 'unsure', correction?: { s: string; r: string; o: string }): void => {
     const sample = samples[idx]
     if (sample === undefined) return
-    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'review', { id: kbId, relationId: sample.id, verdict: v }))
+    const payload: Record<string, unknown> = { id: kbId, relationId: sample.id, verdict: v }
+    if (correction !== undefined) {
+      // 仅携带与原值不同的字段；三字段全等则退化为纯判定
+      const correction2: Record<string, string> = {}
+      if (correction.s.trim() !== '' && correction.s.trim() !== sample.s) correction2.s = correction.s.trim()
+      if (correction.r.trim() !== '' && correction.r.trim() !== sample.r) correction2.r = correction.r.trim()
+      if (correction.o.trim() !== '' && correction.o.trim() !== sample.o) correction2.o = correction.o.trim()
+      if (Object.keys(correction2).length > 0) payload['correction'] = correction2
+    }
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'review', payload))
       .then(() => {
+        setCorrecting(null)
         setDone(n => n + 1)
         if (idx + 1 >= samples.length) load()
         else setIdx(idx + 1)
@@ -194,9 +206,25 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
         ))}
         <div className='gv-actions'>
           <button className='gv-btn gv-btn-primary' onClick={() => verdict('correct')}>{t('verdictCorrect')}</button>
-          <button className='gv-btn gv-btn-danger' onClick={() => verdict('wrong')}>{t('verdictWrong')}</button>
-          <button className='gv-btn' onClick={() => verdict('unsure')}>{t('verdictUnsure')}</button>
+          <button className='gv-btn gv-btn-danger' onClick={() => setCorrecting({ verdict: 'wrong', s: current.s, r: current.r, o: current.o })}>{t('verdictWrong')}</button>
+          <button className='gv-btn' onClick={() => setCorrecting({ verdict: 'unsure', s: current.s, r: current.r, o: current.o })}>{t('verdictUnsure')}</button>
         </div>
+        {correcting !== null && (
+          <div className='gv-form' style={{ marginTop: 10 }}>
+            <div style={{ fontSize: 12, color: 'var(--gv-fg-secondary, var(--dsw-alias-label-secondary, #5a6472))' }}>{t('correctionTitle')}</div>
+            <label>{t('correctionS')}</label>
+            <input value={correcting.s} onChange={e => setCorrecting({ ...correcting, s: e.target.value })} />
+            <label>{t('correctionR')}</label>
+            <input value={correcting.r} onChange={e => setCorrecting({ ...correcting, r: e.target.value })} />
+            <label>{t('correctionO')}</label>
+            <input value={correcting.o} onChange={e => setCorrecting({ ...correcting, o: e.target.value })} />
+            <div className='gv-actions'>
+              <button className='gv-btn gv-btn-primary' onClick={() => verdict(correcting.verdict, { s: correcting.s, r: correcting.r, o: correcting.o })}>{t('correctionSubmit')}</button>
+              <button className='gv-btn' onClick={() => verdict(correcting.verdict)}>{correcting.verdict === 'wrong' ? t('verdictOnlyWrong') : t('verdictOnlyUnsure')}</button>
+              <button className='gv-btn' onClick={() => setCorrecting(null)}>{t('cancel')}</button>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )
@@ -226,6 +254,7 @@ function HealthTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
           <tr><td>{t('filesIndexed')}</td><td>{report.files.indexed}{report.files.stale > 0 ? `（${t('stale')} ${report.files.stale}）` : ''}</td></tr>
           <tr><td>{t('quarantined')}</td><td>{report.files.quarantined}{report.quarantineRate !== null ? `（${pct(report.quarantineRate)}）` : ''}</td></tr>
           <tr><td>{t('samplePrecision')}</td><td>{report.samplePrecision === null ? t('never') : `${report.correct}/${report.sampled} = ${pct(report.samplePrecision)}`}</td></tr>
+          <tr><td>{t('healthCorrected')}</td><td>{report.corrected}</td></tr>
           <tr><td>{t('excluded')}</td><td>{report.excludedRelations}</td></tr>
           <tr><td>{t('lastIndex')}</td><td>{formatAt(report.lastIndexAt)}</td></tr>
         </tbody>

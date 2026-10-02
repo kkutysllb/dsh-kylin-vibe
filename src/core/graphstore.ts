@@ -15,6 +15,7 @@ import type {
   ChunkRef, Community, CommunitySummary, Entity, EntityType, ForgetReport,
   ForgetTarget, QuarantineEntry, QuarantineErrorCode, Relation, RelationType, SourceRow, SourceState,
 } from './types.ts'
+import { normName } from './types.ts'
 
 // ── 输入形状 ─────────────────────────────────────────────────────────────────
 
@@ -781,6 +782,37 @@ export class SqliteGraphStore {
   /** 审查排除：标记关系（检索组装时过滤），可逆。 */
   excludeRelation(id: number): void {
     this.db.prepare('UPDATE relation SET confidence = -1 WHERE id = ?').run(BigInt(id))
+  }
+
+  /** 人工更正：改关系端点/类型（实体按名 upsert，缺失即建 concept 实体），
+   * 置信度置 1（人工确认，同时清除排除态），并全量重算度数。
+   * 返回是否有字段实际变化。 */
+  updateRelationEnds(id: number, next: { readonly srcName?: string; readonly type?: string; readonly dstName?: string }): { readonly changed: boolean } {
+    const row = this.db.prepare('SELECT src_id, dst_id, type FROM relation WHERE id = ?')
+      .get(BigInt(id)) as { src_id: number | bigint; dst_id: number | bigint; type: string } | undefined
+    if (row === undefined) return { changed: false }
+    const srcName = next.srcName
+    const dstName = next.dstName
+    const relType = next.type
+    if ((srcName === undefined || srcName.trim() === '') && (dstName === undefined || dstName.trim() === '') && (relType === undefined || relType.trim() === '')) {
+      return { changed: false }
+    }
+    const resolveEnd = (name: string): number => {
+      const norm = normName(name)
+      const existing = this.getEntityId(norm)
+      if (existing !== undefined) return existing
+      return this.upsertEntityTx({ normName: norm, name, type: 'concept', description: null, confidence: 1 })
+    }
+    const srcId = srcName !== undefined && srcName.trim() !== '' ? resolveEnd(srcName.trim()) : Number(row.src_id)
+    const dstId = dstName !== undefined && dstName.trim() !== '' ? resolveEnd(dstName.trim()) : Number(row.dst_id)
+    const newType = relType !== undefined && relType.trim() !== '' ? relType.trim() : row.type
+    const changed = srcId !== Number(row.src_id) || dstId !== Number(row.dst_id) || newType !== row.type
+    if (!changed) return { changed: false }
+    this.db.prepare('UPDATE relation SET src_id = ?, dst_id = ?, type = ?, confidence = 1 WHERE id = ?')
+      .run(BigInt(srcId), BigInt(dstId), newType, BigInt(id))
+    // 更正可能引入/迁移端点：全量重算度数（cleanupOrphanEntities 同式）。
+    this.db.exec(`UPDATE entity SET degree = (SELECT COUNT(*) FROM relation r WHERE r.src_id = entity.id OR r.dst_id = entity.id)`)
+    return { changed: true }
   }
 
   excludedRelationCount(): number {

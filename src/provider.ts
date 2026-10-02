@@ -133,7 +133,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   private cachedLlm: LlmCompleter | null | undefined
   /** 审查状态（按 KB）：排除的关系 id 集 + 抽样统计。 */
   private readonly reviewExclude = new Map<string, Set<number>>()
-  private readonly reviewStats = new Map<string, { sampled: number; correct: number }>()
+  private readonly reviewStats = new Map<string, { sampled: number; correct: number; corrected: number }>()
 
   constructor(private readonly config: ProviderConfig, private readonly deps: LocalProviderDeps, declared: readonly { name: string; roots: string[]; description: string | null }[] = []) {
     this.directLlm = deps.llm ?? null
@@ -483,21 +483,46 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     }))
   }
 
-  /** 审查判定：correct/wrong 计入抽样统计；wrong 进排除清单（置信度置 -1）。 */
-  reviewRelation(target: KbRef, relationId: number, verdict: 'correct' | 'wrong' | 'unsure'): { readonly excluded: boolean } {
+  /** 审查判定：correct/wrong 计入抽样统计；wrong 进排除清单（置信度置 -1）。
+   * correction 非空且有实际变化时改写关系端点/类型（人工确认置信度置 1、
+   * 清除排除态），计入 corrected 统计，且不再排除。 */
+  reviewRelation(
+    target: KbRef,
+    relationId: number,
+    verdict: 'correct' | 'wrong' | 'unsure',
+    correction?: { readonly s?: string; readonly r?: string; readonly o?: string },
+  ): { readonly excluded: boolean; readonly corrected: boolean } {
     const kb = this.resolveKb(target)
-    if (verdict === 'unsure') return { excluded: false }
-    const stats = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0 }
+    const stats = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0, corrected: 0 }
+    let corrected = false
+    if (correction !== undefined) {
+      const next: { srcName?: string; type?: string; dstName?: string } = {}
+      if (correction.s !== undefined && correction.s.trim() !== '') next.srcName = correction.s.trim()
+      if (correction.r !== undefined && correction.r.trim() !== '') next.type = correction.r.trim()
+      if (correction.o !== undefined && correction.o.trim() !== '') next.dstName = correction.o.trim()
+      if (Object.keys(next).length > 0) {
+        const res = this.storeOf(kb).updateRelationEnds(relationId, next)
+        corrected = res.changed
+        if (corrected) {
+          this.reviewExclude.get(kb.id)?.delete(relationId)
+          stats.sampled += 1
+          stats.corrected += 1
+          this.reviewStats.set(kb.id, stats)
+          return { excluded: false, corrected: true }
+        }
+      }
+    }
+    if (verdict === 'unsure') return { excluded: false, corrected: false }
     stats.sampled += 1
     if (verdict === 'correct') stats.correct += 1
     this.reviewStats.set(kb.id, stats)
-    if (verdict !== 'wrong') return { excluded: false }
+    if (verdict !== 'wrong') return { excluded: false, corrected: false }
     const store = this.storeOf(kb)
     const set = this.reviewExclude.get(kb.id) ?? new Set<number>()
     set.add(relationId)
     this.reviewExclude.set(kb.id, set)
     store.excludeRelation(relationId)
-    return { excluded: true }
+    return { excluded: true, corrected: false }
   }
 
   /** 体检报告（0207 §3.4 结论卡）。 */
@@ -508,7 +533,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     const indexed = sources.filter(s => s.state === 'merged').length
     const stale = sources.filter(s => s.state !== 'merged' && s.state !== 'deleted').length
     const quarantined = sources.filter(s => s.state === 'quarantined').length
-    const review = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0 }
+    const review = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0, corrected: 0 }
     const excluded = this.reviewExclude.get(kb.id)
     const excludedCount = excluded !== undefined && excluded.size > 0 ? excluded.size : store.excludedRelationCount()
     const scannedTotal = indexed + stale
@@ -519,6 +544,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       quarantineRate: (indexed + quarantined) === 0 ? null : quarantined / (indexed + quarantined),
       sampled: review.sampled,
       correct: review.correct,
+      corrected: review.corrected,
       samplePrecision: review.sampled === 0 ? null : review.correct / review.sampled,
       excludedRelations: excludedCount,
       lastIndexAt: kb.lastIndexedAt,

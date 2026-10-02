@@ -106,6 +106,38 @@ describe('applyExtraction：归并与聚合', () => {
     assert.equal(chunksForOrder.length, 2)
   })
 
+  test('updateRelationEnds：人工更正端点/类型（实体按名 upsert + 清排除态 + 置信度 1）', () => {
+    // 全程用独立命名 + 末尾 forget 还原现场（其他测试对 store 做全局断言）
+    const { sourceId, chunkId } = seedFile('g.md', '更正库存服务推送更正通知服务')
+    store.applyExtraction(delta(sourceId, chunkId,
+      [
+        { normName: '更正库存服务', name: '更正库存服务', type: 'module', description: null, confidence: 0.7 },
+        { normName: '更正通知服务', name: '更正通知服务', type: 'module', description: null, confidence: 0.7 },
+      ],
+      [{ srcNorm: '更正库存服务', dstNorm: '更正通知服务', type: 'pushes', description: '推送变更', confidence: 0.7 }],
+      [{ normName: '更正库存服务', spanStart: 0, spanEnd: 6 }],
+    ))
+    const rel = store.allRelations().find(r => r.type === 'pushes')!
+    store.excludeRelation(rel.id)
+    const excludedBefore = store.excludedRelationCount()
+    // 人工更正宾语：更正通知服务 → 更正短信网关（新实体，concept）
+    const res = store.updateRelationEnds(rel.id, { dstName: '更正短信网关' })
+    assert.equal(res.changed, true)
+    assert.equal(store.excludedRelationCount(), excludedBefore - 1, '更正应清除该关系排除态')
+    const relAfter = store.allRelations().find(r => r.id === rel.id)!
+    assert.equal(Number(relAfter.confidence), 1, '人工确认置信度置 1')
+    const gateway = store.getEntity('更正短信网关')!
+    assert.equal(relAfter.dstId, gateway.id)
+    assert.equal(gateway.type, 'concept', '缺失实体按 concept 建立')
+    // 改类型 + 无实际变化分支
+    assert.equal(store.updateRelationEnds(rel.id, { type: 'notifies' }).changed, true)
+    assert.equal(store.allRelations().find(r => r.id === rel.id)?.type, 'notifies')
+    assert.equal(store.updateRelationEnds(rel.id, {}).changed, false)
+    // 还原共享 store：证据清扫删关系，孤儿实体（无 mention）随之清除
+    store.forget({ kind: 'file', path: 'g.md' })
+    assert.equal(store.allRelations().some(r => r.id === rel.id), false)
+  })
+
   test('关系端点缺失时跳过，不炸批次', () => {
     const { sourceId, chunkId } = seedFile('f.md', '幽灵关系')
     const before = store.allRelations().length

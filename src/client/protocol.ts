@@ -105,6 +105,7 @@ export interface HealthReport {
   readonly quarantineRate: number | null
   readonly sampled: number
   readonly correct: number
+  readonly corrected: number
   readonly samplePrecision: number | null
   readonly excludedRelations: number
   readonly lastIndexAt: number | null

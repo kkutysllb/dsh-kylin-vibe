@@ -35,8 +35,8 @@ describe('GraphRagServiceImpl', () => {
     estimate: () => ({ files: 0, estCalls: 0 }),
     browseEntities: () => [],
     sampleForReview: () => [],
-    reviewRelation: () => ({ excluded: false }),
-    healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
+    reviewRelation: () => ({ excluded: false, corrected: false }),
+    healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
   })
 
   test('单 provider 自动选中；注销函数生效', () => {

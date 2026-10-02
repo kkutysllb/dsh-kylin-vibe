@@ -228,7 +228,17 @@ export async function handleKbRpc(
         if (!Number.isSafeInteger(relationId) || relationId <= 0) return fail('INVALID', 'relationId must be a positive integer')
         const verdict = body['verdict']
         if (verdict !== 'correct' && verdict !== 'wrong' && verdict !== 'unsure') return fail('INVALID', 'verdict must be correct|wrong|unsure')
-        return ok(provider.reviewRelation({ id }, relationId, verdict))
+        let correction: { s?: string; r?: string; o?: string } | undefined
+        const raw = body['correction']
+        if (typeof raw === 'object' && raw !== null) {
+          const c = raw as Record<string, unknown>
+          correction = {
+            s: typeof c['s'] === 'string' ? c['s'].slice(0, 200) : undefined,
+            r: typeof c['r'] === 'string' ? c['r'].slice(0, 120) : undefined,
+            o: typeof c['o'] === 'string' ? c['o'].slice(0, 200) : undefined,
+          }
+        }
+        return ok(provider.reviewRelation({ id }, relationId, verdict, correction))
       }
       case 'health': {
         const id = string(body['id'], 'id', 120)
