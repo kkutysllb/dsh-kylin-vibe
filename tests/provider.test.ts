@@ -39,6 +39,11 @@ describe('GraphRagServiceImpl', () => {
     listKnowledge: () => [],
     addTextKnowledge: () => ({ file: '', started: false }),
     forgetKnowledge: async () => ({ deleted: { chunks: 0, relations: 0, entities: 0 } }),
+    reindexKnowledge: () => ({ started: false }),
+    setKnowledgeEnabled: () => ({ started: false }),
+    importFiles: () => ({ imported: 0, skipped: [], started: false }),
+    importDirectory: () => ({ imported: 0, skipped: [], started: false }),
+    changesPreview: () => ({ added: 0, changed: [], removed: [] }),
     reviewRelation: () => ({ excluded: false, corrected: false }),
     healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
   })

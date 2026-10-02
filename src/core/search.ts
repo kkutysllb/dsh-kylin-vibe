@@ -25,6 +25,7 @@ export interface LocalOptions {
   readonly topK?: number
   readonly chunkPerEntity?: number
   readonly maxTokens?: number
+  readonly chunkLimit?: number
   readonly ppr?: { damping?: number; iterations?: number }
 }
 
@@ -80,8 +81,19 @@ export function searchLocal(store: SqliteGraphStore, question: string, opts: Loc
     evidence: [refFor(store, e.relation.srcId)],
   }))
 
-  // 原文证据层（一级）
-  const chunks = fitTokenBudget(store.chunksForEntities([...topIds], chunkPerEntity), maxTokens).map(toEvidenceChunk)
+  // 原文证据层（一级）：FTS 直击带分（bm25，负值更相关）优先，
+  // PPR 邻近 chunk 补足（无独立打分 → null），总量受 chunkLimit 钳制
+  const chunkLimit = Math.min(Math.max(opts.chunkLimit ?? 12, 3), 50)
+  const ftsHits = store.searchChunks(terms, chunkLimit)
+  const chunks: EvidenceChunk[] = ftsHits.map(h => toEvidenceChunk(h.chunk, h.score))
+  const seenChunk = new Set(chunks.map(c => `${c.path}:${c.lines}`))
+  for (const c of fitTokenBudget(store.chunksForEntities([...topIds], chunkPerEntity), maxTokens)) {
+    if (chunks.length >= chunkLimit) break
+    const key = `${c.sourcePath}:${c.startLine}-${c.endLine}`
+    if (seenChunk.has(key)) continue
+    seenChunk.add(key)
+    chunks.push(toEvidenceChunk(c))
+  }
 
   // 社区摘要层（二手）：有摘要才带
   const communities: EvidenceCommunity[] = []
@@ -204,8 +216,8 @@ function refFor(store: SqliteGraphStore, entityId: number): { path: string; line
   return { path: c?.sourcePath ?? '(无原文)', lines: c ? `${c.startLine}-${c.endLine}` : '-' }
 }
 
-function toEvidenceChunk(c: { sourcePath: string; startLine: number; endLine: number; text: string }): EvidenceChunk {
-  return { path: c.sourcePath, lines: `${c.startLine}-${c.endLine}`, text: c.text }
+function toEvidenceChunk(c: { sourcePath: string; startLine: number; endLine: number; text: string }, score: number | null = null): EvidenceChunk {
+  return { path: c.sourcePath, lines: `${c.startLine}-${c.endLine}`, text: c.text, score }
 }
 
 /** 按 token 预算截断 chunk 列表（保持顺序）。 */

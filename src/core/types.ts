@@ -79,6 +79,7 @@ export type SourceState =
   | 'merged'
   | 'failed'
   | 'quarantined'
+  | 'disabled'
   | 'deleted'
 
 export interface SourceRow {
@@ -181,6 +182,8 @@ export interface EvidenceChunk {
   readonly path: string
   readonly lines: string
   readonly text: string
+  /** 检索打分（local 的 FTS bm25，负值更相关）；无打分来源为 null。 */
+  readonly score: number | null
 }
 
 export interface EvidenceEntity {

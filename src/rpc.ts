@@ -231,6 +231,33 @@ export async function handleKbRpc(
         const path = string(body['path'], 'path', 400)
         return ok(await provider.forgetKnowledge({ id }, path))
       }
+      case 'reindexSource': {
+        const id = string(body['id'], 'id', 120)
+        const path = string(body['path'], 'path', 400)
+        return ok(provider.reindexKnowledge({ id }, path))
+      }
+      case 'setSourceEnabled': {
+        const id = string(body['id'], 'id', 120)
+        const path = string(body['path'], 'path', 400)
+        const enabled = body['enabled'] === true
+        return ok(provider.setKnowledgeEnabled({ id }, path, enabled))
+      }
+      case 'importFiles': {
+        const id = string(body['id'], 'id', 120)
+        const dir = string(body['dir'], 'dir', 500)
+        if (!dir.startsWith('/')) return fail('INVALID', 'dir must be an absolute path')
+        return ok(provider.importDirectory({ id }, dir))
+      }
+      case 'changes': {
+        const id = string(body['id'], 'id', 120)
+        return ok(provider.changesPreview({ id }))
+      }
+      case 'recall': {
+        const id = string(body['id'], 'id', 120)
+        const question = string(body['question'], 'question', 2000)
+        const topK = Math.min(Math.max(Number(body['topK'] ?? 12) || 12, 5), 50)
+        return ok(await provider.query({ id }, { question, mode: 'local', topK }))
+      }
       case 'addText': {
         const id = string(body['id'], 'id', 120)
         const title = string(body['title'], 'title', 120)

@@ -32,6 +32,8 @@ export interface QueryInput {
   readonly question: string
   readonly mode: 'local' | 'global'
   readonly maxTokens?: number
+  /** 召回测试：证据 chunk 数上限（local，默认 12，钳 5..50）。 */
+  readonly topK?: number
 }
 
 export interface TraverseInput {
@@ -109,12 +111,26 @@ export interface GraphRagProvider {
   // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
   sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
-  /** 已入库来源清单（面板知识管理）。 */
-  listKnowledge(target: KbRef): readonly { readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean }[]
+  /** 已入库来源清单（面板知识管理，含统计/类型/时间）。 */
+  listKnowledge(target: KbRef): readonly {
+    readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean
+    readonly ext: string; readonly mtimeMs: number; readonly error: string | null
+    readonly stats: { readonly chunks: number; readonly entities: number; readonly relations: number }
+  }[]
   /** 补充新知识：粘贴文本落为笔记文件并后台增量索引。 */
   addTextKnowledge(target: KbRef, title: string, text: string): { readonly file: string; readonly started: boolean }
   /** 删除旧知识：按文件级联清除；笔记文件同时删物理文件。 */
   forgetKnowledge(target: KbRef, path: string): Promise<{ readonly deleted: { chunks: number; relations: number; entities: number } }>
+  /** 单文件重新索引（其余皆终态，只续跑它）。 */
+  reindexKnowledge(target: KbRef, path: string): { readonly started: boolean }
+  /** 停用/启用来源：停用=排除检索不删数据；启用=置回待索引并自动续跑。 */
+  setKnowledgeEnabled(target: KbRef, path: string, enabled: boolean): { readonly started: boolean }
+  /** 文件导入：选择器路径复制进导入区并后台索引（授权=用户显式挑选）。 */
+  importFiles(target: KbRef, paths: readonly string[]): { readonly imported: number; readonly skipped: readonly { readonly path: string; readonly reason: string }[]; readonly started: boolean }
+  /** 目录导入：所选目录下的常规文件（非递归、跳过隐藏）复制进导入区并索引。 */
+  importDirectory(target: KbRef, dir: string): { readonly imported: number; readonly skipped: readonly { readonly path: string; readonly reason: string }[]; readonly started: boolean }
+  /** 变更同步预览：扫描 diff（零 LLM），供面板"有变更"提示。 */
+  changesPreview(target: KbRef): { readonly added: number; readonly changed: readonly string[]; readonly removed: readonly string[] }
   /** 选区更正建议：对滑选原文跑 SPO 抽取返回候选三元组（面板更正预填）。 */
 
   correctFromSelection(target: KbRef | undefined, text: string): Promise<{ readonly triples: ReadonlyArray<{ s: string; r: string; o: string }> }>

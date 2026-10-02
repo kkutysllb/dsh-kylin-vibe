@@ -9,6 +9,7 @@ import { useEffect, useState } from 'react'
 import { unwrap, type EntityCard, type HealthReport, type ReviewSample } from './protocol.ts'
 import type { KbRuntime, Translate } from './runtime.ts'
 import { RPC_CHANNEL } from './runtime.ts'
+import { formatTime } from './view.tsx'
 
 /** 平台单例模块表的 require（build.mjs 包装器注入；测试/裸环境 undefined）。 */
 declare const __bundleRequire: ((spec: string) => unknown) | undefined
@@ -57,7 +58,7 @@ function ChunkText(props: { readonly text: string; readonly t: Translate }): Rea
   )
 }
 
-type TabKind = 'browse' | 'review' | 'health' | 'manage'
+type TabKind = 'browse' | 'review' | 'recall' | 'health' | 'manage'
 
 export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string; readonly roots: readonly string[] }): React.ReactElement {
   const { runtime, t, kbId, roots } = props
@@ -65,6 +66,7 @@ export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly 
   const tabs: { readonly kind: TabKind; readonly label: string }[] = [
     { kind: 'browse', label: t('tabBrowse') },
     { kind: 'review', label: t('tabReview') },
+    { kind: 'recall', label: t('tabRecall') },
     { kind: 'health', label: t('tabHealth') },
     { kind: 'manage', label: t('tabManage') },
   ]
@@ -77,8 +79,70 @@ export function BrowseReviewView(props: { readonly runtime: KbRuntime; readonly 
       </div>
       {tab === 'browse' && <BrowseTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'review' && <ReviewTab runtime={runtime} t={t} kbId={kbId} />}
+      {tab === 'recall' && <RecallTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'health' && <HealthTab runtime={runtime} t={t} kbId={kbId} />}
       {tab === 'manage' && <ManageTab runtime={runtime} t={t} kbId={kbId} roots={roots} />}
+    </div>
+  )
+}
+
+/** 召回测试（Dify 同款）：输入问题 → local 检索 → 证据 chunk 带分数呈现。 */
+function RecallTab(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string }): React.ReactElement {
+  const { runtime, t, kbId } = props
+  const [question, setQuestion] = useState('')
+  const [topK, setTopK] = useState(12)
+  const [pack, setPack] = useState<{ chunks: ReadonlyArray<{ path: string; lines: string; text: string; score: number | null }>; entities: number } | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const run = (q: string): void => {
+    if (q.trim() === '') return
+    setBusy(true)
+    setPack(null)
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'recall', { id: kbId, question: q.trim(), topK }))
+      .then((v) => {
+        const pack = v as { chunks?: ReadonlyArray<{ path: string; lines: string; text: string; score: number | null }>; entities?: unknown[] }
+        setPack({ chunks: pack.chunks ?? [], entities: pack.entities?.length ?? 0 })
+      })
+      .catch(err => runtime.pushNotice(`${t('loadFailed')}: ${err instanceof Error ? err.message : String(err)}`))
+      .finally(() => setBusy(false))
+  }
+
+  return (
+    <div>
+      <div className='gv-card'>
+        <div className='gv-card-head'><span className='gv-name'>{t('recallTitle')}</span></div>
+        <div className='gv-search'>
+          <input
+            value={question}
+            placeholder={t('recallPlaceholder')}
+            onChange={e => setQuestion(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') run(question) }}
+          />
+          <select className='gv-select' style={{ width: 90 }} value={topK} onChange={e => setTopK(Number(e.target.value))}>
+            {[5, 10, 12, 20, 30, 50].map(k => <option key={k} value={k}>top {k}</option>)}
+          </select>
+          <button className='gv-btn gv-btn-primary' disabled={busy || question.trim() === ''} onClick={() => run(question)}>{t('recallRun')}</button>
+        </div>
+        <div className='gv-cost'>{t('recallHint')}</div>
+      </div>
+      {busy && <div className='gv-empty'>{t('loading')}</div>}
+      {pack !== null && !busy && (
+        <>
+          <div className='gv-cost' style={{ marginBottom: 6 }}>
+            {t('recallSummary', { count: pack.chunks.length, entities: pack.entities })}
+          </div>
+          {pack.chunks.length === 0 && <div className='gv-empty'>{t('noEntities')}</div>}
+          {pack.chunks.map((c, i) => (
+            <div key={i} className='gv-card'>
+              <div className='gv-card-head'>
+                <span className='gv-cost' style={{ wordBreak: 'break-all' }}>{c.path}:{c.lines}</span>
+                {c.score !== null && <span className='gv-badge'>{t('recallScore')} {c.score.toFixed(3)}</span>}
+              </div>
+              <ChunkText text={c.text} t={t} />
+            </div>
+          ))}
+        </>
+      )}
     </div>
   )
 }
@@ -290,17 +354,25 @@ function ManageTab(props: {
   const { runtime, t, kbId, roots } = props
   const [title, setTitle] = useState('')
   const [text, setText] = useState('')
-  const [sources, setSources] = useState<readonly { path: string; state: string; isNote: boolean }[]>([])
+  const [filter, setFilter] = useState('')
+  const [sources, setSources] = useState<readonly KnowledgeSource[]>([])
+  const [changes, setChanges] = useState<{ added: number; changed: readonly string[]; removed: readonly string[] } | null>(null)
   const [rootsText, setRootsText] = useState(roots.join('\n'))
   const [rootsSaved, setRootsSaved] = useState(false)
   const [busy, setBusy] = useState(false)
+  const [busyPath, setBusyPath] = useState<string | null>(null)
 
   const loadSources = (): void => {
     void unwrap(runtime.rpc.call(RPC_CHANNEL, 'sources', { id: kbId }))
-      .then(v => setSources(v as readonly { path: string; state: string; isNote: boolean }[]))
+      .then(v => setSources(v as readonly KnowledgeSource[]))
       .catch(err => runtime.pushNotice(String(err)))
   }
-  useEffect(() => { loadSources() }, [kbId])
+  const loadChanges = (): void => {
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'changes', { id: kbId }))
+      .then(v => setChanges(v as { added: number; changed: readonly string[]; removed: readonly string[] }))
+      .catch(() => setChanges(null))
+  }
+  useEffect(() => { loadSources(); loadChanges() }, [kbId])
 
   const addText = (): void => {
     if (text.trim() === '') return
@@ -316,12 +388,41 @@ function ManageTab(props: {
       .finally(() => setBusy(false))
   }
 
+  const runFor = (rpc: string, payload: Record<string, unknown>, notice: string): void => {
+    setBusyPath(String(payload['path'] ?? ''))
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, rpc, { id: kbId, ...payload }))
+      .then(() => { runtime.pushNotice(notice); loadSources(); loadChanges() })
+      .catch(err => runtime.pushNotice(String(err)))
+      .finally(() => setBusyPath(null))
+  }
+
   const removeSource = (path: string): void => {
     // eslint-disable-next-line no-alert
     if (!window.confirm(t('manageConfirmDelete'))) return
-    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'forgetFile', { id: kbId, path }))
-      .then(() => { runtime.pushNotice(t('manageFileDeleted')); loadSources() })
+    runFor('forgetFile', { path }, t('manageFileDeleted'))
+  }
+  const reindexSource = (path: string): void => {
+    runFor('reindexSource', { path }, t('manageReindexed'))
+  }
+  const toggleSource = (path: string, enabled: boolean): void => {
+    runFor('setSourceEnabled', { path, enabled }, enabled ? t('manageEnabled') : t('manageDisabled'))
+  }
+
+  const importDirectory = (): void => {
+    setBusy(true)
+    void runtime.bridge.pickDirectory()
+      .then((dir) => {
+        if (dir === null) return
+        return unwrap(runtime.rpc.call(RPC_CHANNEL, 'importFiles', { id: kbId, dir }))
+          .then((v) => {
+            const r = v as { imported: number; skipped: readonly { path: string; reason: string }[] }
+            runtime.pushNotice(t('manageImported', { count: r.imported, skipped: r.skipped.length }))
+            loadSources()
+            loadChanges()
+          })
+      })
       .catch(err => runtime.pushNotice(String(err)))
+      .finally(() => setBusy(false))
   }
 
   const saveRoots = (): void => {
@@ -333,6 +434,9 @@ function ManageTab(props: {
       .finally(() => setBusy(false))
   }
 
+  const visible = sources.filter(s => filter.trim() === '' || s.path.toLowerCase().includes(filter.trim().toLowerCase()))
+  const changeTotal = changes === null ? 0 : changes.added + changes.changed.length + changes.removed.length
+
   return (
     <div>
       <div className='gv-card'>
@@ -343,22 +447,50 @@ function ManageTab(props: {
         <textarea value={text} onChange={e => setText(e.target.value)} style={{ minHeight: 140 }} placeholder={t('manageAddTextHint')} />
         <div className='gv-actions'>
           <button className='gv-btn gv-btn-primary' disabled={busy || text.trim() === ''} onClick={addText}>{t('manageAddSubmit')}</button>
+          <button className='gv-btn' disabled={busy} onClick={importDirectory}>{t('manageImport')}</button>
         </div>
       </div>
 
       <div className='gv-card'>
-        <div className='gv-card-head'><span className='gv-name'>{t('manageSources')}</span></div>
-        {sources.length === 0 && <div className='gv-empty'>{t('manageEmpty')}</div>}
+        <div className='gv-card-head'>
+          <span className='gv-name'>{t('manageSources')}</span>
+          <input
+            value={filter}
+            onChange={e => setFilter(e.target.value)}
+            placeholder={t('manageFilterHint')}
+            style={{ flex: 1, minWidth: 120 }}
+          />
+        </div>
+        {changes !== null && changeTotal > 0 && (
+          <div className='gv-notice' style={{ marginBottom: 8 }}>
+            <span>{t('manageChanges', { added: changes.added, changed: changes.changed.length, removed: changes.removed.length })}</span>
+            <button className='gv-btn' onClick={() => { void runtime.startIndex(kbId) }}>{t('manageSyncIndex')}</button>
+          </div>
+        )}
+        {visible.length === 0 && <div className='gv-empty'>{sources.length === 0 ? t('manageEmpty') : t('manageNoMatch')}</div>}
         <table className='gv-table'>
           <tbody>
-            {sources.map(s => (
+            {visible.map(s => (
               <tr key={s.path}>
                 <td style={{ wordBreak: 'break-all' }}>
                   {s.path}
-                  {s.isNote && <span className='gv-badge' style={{ marginLeft: 6 }}>{t('tabManage')}</span>}
+                  {s.isNote && <span className='gv-badge' style={{ marginLeft: 6 }}>{t('badgeNote')}</span>}
+                  {s.state === 'disabled' && <span className='gv-badge' style={{ marginLeft: 4 }}>{t('badgeDisabled')}</span>}
+                  {s.error !== null && s.error !== '' && <div className='gv-cost'>{s.error}</div>}
                 </td>
-                <td style={{ width: 70 }}>{s.state}</td>
-                <td style={{ width: 60 }}><button className='gv-btn gv-btn-danger' onClick={() => removeSource(s.path)}>{t('manageDelete')}</button></td>
+                <td style={{ width: 56 }}>{s.ext !== '' ? s.ext.slice(1) : '—'}</td>
+                <td style={{ width: 60 }}>{s.state}</td>
+                <td style={{ width: 96 }} className='gv-cost'>{t('manageContribution', { chunks: s.stats.chunks, entities: s.stats.entities, relations: s.stats.relations })}</td>
+                <td style={{ width: 84 }} className='gv-cost'>{formatTime(s.mtimeMs, t)}</td>
+                <td style={{ width: 150 }}>
+                  <div className='gv-actions' style={{ margin: 0, flexWrap: 'nowrap' }}>
+                    <button className='gv-btn' disabled={busyPath !== null} onClick={() => reindexSource(s.path)}>{t('manageReindex')}</button>
+                    {s.state === 'disabled'
+                      ? <button className='gv-btn' disabled={busyPath !== null} onClick={() => toggleSource(s.path, true)}>{t('manageEnable')}</button>
+                      : <button className='gv-btn' disabled={busyPath !== null} onClick={() => toggleSource(s.path, false)}>{t('manageDisable')}</button>}
+                    <button className='gv-btn gv-btn-danger' disabled={busyPath !== null} onClick={() => removeSource(s.path)}>{t('manageDelete')}</button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>

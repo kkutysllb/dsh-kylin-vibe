@@ -298,6 +298,25 @@ export class SqliteGraphStore {
     this.db.prepare('UPDATE source SET state=?, error=? WHERE id=?').run(state, error, BigInt(id))
   }
 
+  /** 单来源贡献统计（文档管理表）：chunk 数、涉及实体数（mention 去重）、
+   * 关系贡献数（证据 chunk 落在本来源的去重关系）。 */
+  sourceStats(id: number): { chunks: number; entities: number; relations: number } {
+    const chunks = Number((this.db.prepare('SELECT COUNT(*) AS c FROM chunk WHERE source_id = ?').get(BigInt(id)) as { c: number | bigint }).c)
+    const entities = Number((this.db.prepare(
+      'SELECT COUNT(DISTINCT entity_id) AS c FROM mention WHERE chunk_id IN (SELECT id FROM chunk WHERE source_id = ?)',
+    ).get(BigInt(id)) as { c: number | bigint }).c)
+    const relations = Number((this.db.prepare(
+      `SELECT COUNT(DISTINCT re.relation_id) AS c FROM relation_evidence re
+       JOIN chunk c ON c.id = re.chunk_id WHERE c.source_id = ?`,
+    ).get(BigInt(id)) as { c: number | bigint }).c)
+    return { chunks, entities, relations }
+  }
+
+  /** 单文件重索引语义：把该来源置回 pending（下次索引仅续跑它，其余皆终态）。 */
+  resetSourceToPending(id: number): void {
+    this.setSourceState(id, 'pending')
+  }
+
   replaceChunks(sourceId: number, chunks: readonly ChunkInput[]): void {
     this.tx(() => {
       // FTS 清理必须在 chunk 删除之前（子查询依赖 chunk 表）
@@ -330,7 +349,10 @@ export class SqliteGraphStore {
     if (terms.length === 0) return []
     const match = terms.map(t => `"${t.replaceAll('"', '""')}"`).join(' OR ')
     const hits = this.db.prepare(
-      `SELECT f.rowid AS cid, bm25(chunk_fts) AS score FROM chunk_fts f WHERE chunk_fts MATCH ? ORDER BY score LIMIT ?`,
+      `SELECT f.rowid AS cid, bm25(chunk_fts) AS score FROM chunk_fts f
+       WHERE chunk_fts MATCH ?
+         AND f.rowid NOT IN (SELECT c2.id FROM chunk c2 JOIN source s2 ON s2.id = c2.source_id WHERE s2.state = 'disabled')
+       ORDER BY score LIMIT ?`,
     ).all(match, BigInt(k)) as Array<{ cid: number | bigint; score: number }>
     return hits.map(h => {
       const chunk = this.getChunkById(Number(h.cid))
@@ -518,7 +540,8 @@ export class SqliteGraphStore {
     const seen = new Set<number>()
     for (const id of ids) {
       const rows = this.db.prepare(
-        `SELECT c.* FROM mention m JOIN chunk c ON c.id = m.chunk_id WHERE m.entity_id = ? LIMIT ?`,
+        `SELECT c.* FROM mention m JOIN chunk c ON c.id = m.chunk_id
+         WHERE m.entity_id = ? AND c.source_id NOT IN (SELECT id FROM source WHERE state = 'disabled') LIMIT ?`,
       ).all(BigInt(id), BigInt(limitPerEntity)) as Array<Record<string, unknown>>
       for (const r of rows) {
         const cid = Number(r.id as number | bigint)
@@ -597,7 +620,9 @@ export class SqliteGraphStore {
        JOIN chunk c ON c.id = re.chunk_id
        JOIN source s ON s.id = c.source_id
        LEFT JOIN mention m ON m.chunk_id = re.chunk_id AND (m.entity_id = (SELECT src_id FROM relation WHERE id = ?) OR m.entity_id = (SELECT dst_id FROM relation WHERE id = ?))
-       WHERE re.relation_id = ? LIMIT 12`,
+       WHERE re.relation_id = ?
+         AND c.source_id NOT IN (SELECT id FROM source WHERE state = 'disabled')
+       LIMIT 12`,
     ).all(BigInt(relationId), BigInt(relationId), BigInt(relationId)) as Array<Record<string, unknown>>
     const byChunk = new Map<number, { path: string; startLine: number; endLine: number; text: string; spanStart: number | null; spanEnd: number | null }>()
     for (const r of rows) {

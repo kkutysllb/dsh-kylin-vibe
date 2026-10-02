@@ -91,7 +91,7 @@ export async function runIngest(
   // 恢复扫描：残留 running 批次收敛 + 非终态 source 回 pending（0203 §1.1）
   store.recoverInterruptedBatches()
   for (const s of store.listSources()) {
-    if (s.state !== 'merged' && s.state !== 'deleted') store.setSourceState(s.id, 'pending')
+    if (s.state !== 'merged' && s.state !== 'deleted' && s.state !== 'disabled') store.setSourceState(s.id, 'pending')
   }
 
   // ── 阶段 A+B：授权 + 扫描 + diff ──
@@ -114,7 +114,7 @@ export async function runIngest(
   const scannedPaths = new Set(scan.files.map(f => f.path))
   const dirtyPaths = new Set([...diff.added, ...diff.changed].map(f => f.path))
   const resume = store.listSources()
-    .filter(s => ['pending', 'chunked', 'extracting', 'extracted', 'failed'].includes(s.state) && scannedPaths.has(s.path) && !dirtyPaths.has(s.path))
+    .filter(s => ['pending', 'chunked', 'extracting', 'extracted', 'failed'].includes(s.state) && s.state !== 'disabled' && scannedPaths.has(s.path) && !dirtyPaths.has(s.path))
     .map(s => ({ path: s.path, absPath: s.absPath, contentHash: s.contentHash, sizeBytes: s.sizeBytes, mtimeMs: s.mtimeMs }))
   const dirty = [...diff.added, ...diff.changed, ...resume]
   onProgress?.({ phase: 'scanning', filesDone: 0, filesTotal: dirty.length, quarantined: 0 })

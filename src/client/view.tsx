@@ -223,7 +223,7 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
   )
 }
 
-function formatTime(at: number | null, t: Translate): string {
+export function formatTime(at: number | null, t: Translate): string {
   if (at === null || at === 0) return t('never')
   const d = new Date(at)
   const pad = (n: number): string => String(n).padStart(2, '0')

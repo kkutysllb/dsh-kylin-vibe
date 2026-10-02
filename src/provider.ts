@@ -5,7 +5,7 @@
  * 不触碰工具面（tool.ts）。
  */
 
-import { mkdirSync, existsSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf } from './adapter.ts'
@@ -274,8 +274,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     if (running !== undefined && running.phase !== 'done' && running.phase !== 'error') {
       return { started: false }
     }
-    const notesDir = this.notesDirOf(kb)
-    if (kb.roots.length === 0 && !existsSync(notesDir)) {
+    if (this.effectiveRoots(kb).length === 0) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
     const llm = this.completer()
@@ -299,8 +298,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     const controller = new AbortController()
     this.controllers.set(kb.id, controller)
     const cfg: IngestConfig = {
-      // notes 目录存在才并入（为空/未用面板补充的库不产生空目录）
-      authorizedRoots: [...kb.roots, ...(existsSync(notesDir) ? [notesDir] : [])],
+      authorizedRoots: this.effectiveRoots(kb),
       roots: opts.roots,
       excludes: this.config.excludes,
       chunk: this.config.chunk,
@@ -405,8 +403,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
 
   async index(target: KbRef, opts: IndexOptions, signal: AbortSignal): Promise<IndexReport> {
     const kb = this.resolveKb(target)
-    const notesDir = this.notesDirOf(kb)
-    if (kb.roots.length === 0 && !existsSync(notesDir)) {
+    if (this.effectiveRoots(kb).length === 0) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
     const llm = this.completer()
@@ -421,8 +418,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       for (const q of store.quarantineList()) store.quarantineResolve(q.id)
     }
     const cfg: IngestConfig = {
-      // notes 目录存在才并入（为空/未用面板补充的库不产生空目录）
-      authorizedRoots: [...kb.roots, ...(existsSync(notesDir) ? [notesDir] : [])],
+      authorizedRoots: this.effectiveRoots(kb),
       roots: opts.roots,
       excludes: this.config.excludes,
       chunk: this.config.chunk,
@@ -443,7 +439,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       throw new GraphRagError('NOT_INDEXED', `知识库「${kb.name}」尚未建立图谱；先调用 graphrag_index（需审批）`)
     }
     if (q.mode === 'global') return searchGlobal(store, q.question, { maxTokens: q.maxTokens })
-    return searchLocal(store, q.question, { maxTokens: q.maxTokens })
+    return searchLocal(store, q.question, { maxTokens: q.maxTokens, chunkLimit: q.topK })
   }
 
   async traverse(target: KbRef | undefined, t: TraverseInput): Promise<Subgraph> {
@@ -507,6 +503,20 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return join(this.config.dataDir, 'kbs', kb.id, 'notes')
   }
 
+  /** 导入区（文档导入落点）：面板选择的文件复制到此，随授权根一并索引。 */
+  private importsDirOf(kb: { readonly id: string }): string {
+    return join(this.config.dataDir, 'kbs', kb.id, 'imports')
+  }
+
+  /** 该库生效的授权根：显式 roots + notes/imports（存在才并入）。 */
+  private effectiveRoots(kb: { readonly id: string; readonly roots: readonly string[] }): string[] {
+    const out = [...kb.roots]
+    for (const d of [this.notesDirOf(kb), this.importsDirOf(kb)]) {
+      if (existsSync(d)) out.push(d)
+    }
+    return out
+  }
+
   /** 补充新知识：用户粘贴文本落为笔记文件并后台增量索引。 */
   addTextKnowledge(target: KbRef, title: string, text: string): { readonly file: string; readonly started: boolean } {
     const kb = this.resolveKb(target)
@@ -525,16 +535,116 @@ export class LocalGraphRagProvider implements GraphRagProvider {
 
   /** 已入库来源清单（含陈旧/失败，供面板管理）。isNote 用 realpath 比较
    * （scanner 存 realpath，而 notesDir 未经解析——macOS /var 符号差异）。 */
-  listKnowledge(target: KbRef): readonly { readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean }[] {
+  listKnowledge(target: KbRef): readonly {
+    readonly path: string; readonly absPath: string; readonly state: string; readonly isNote: boolean
+    readonly ext: string; readonly mtimeMs: number; readonly error: string | null
+    readonly stats: { readonly chunks: number; readonly entities: number; readonly relations: number }
+  }[] {
     const kb = this.resolveKb(target)
     const raw = this.notesDirOf(kb)
     const notesDir = existsSync(raw) ? realpathSync(raw) : raw
-    return this.storeOf(kb).listSources().map(s => ({
-      path: s.path,
-      absPath: s.absPath,
-      state: s.state,
-      isNote: s.absPath.startsWith(notesDir),
-    }))
+    const rawImports = this.importsDirOf(kb)
+    const importsDir = existsSync(rawImports) ? realpathSync(rawImports) : rawImports
+    const store = this.storeOf(kb)
+    return store.listSources().map(s => {
+      const ext = s.path.includes('.') ? s.path.slice(s.path.lastIndexOf('.')).toLowerCase() : ''
+      const origin = s.absPath.startsWith(notesDir) ? 'note' : s.absPath.startsWith(importsDir) ? 'import' : 'root'
+      return {
+        path: s.path,
+        absPath: s.absPath,
+        state: s.state,
+        isNote: origin === 'note',
+        ext,
+        mtimeMs: s.mtimeMs,
+        error: s.error,
+        stats: store.sourceStats(s.id),
+      }
+    })
+  }
+
+  /** 单文件重新索引：来源置回 pending，后台索引只续跑它（其余皆终态）。 */
+  reindexKnowledge(target: KbRef, path: string): { readonly started: boolean } {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const src = store.getSource(path)
+    if (src === null) throw new GraphRagError('INVALID', `来源不存在：${path}`)
+    store.resetSourceToPending(src.id)
+    return { started: this.indexBackground({ id: kb.id }, {}).started }
+  }
+
+  /** 停用/启用来源：停用=排除检索不删数据（diff 与恢复循环均尊重停用态）；
+   * 启用=置回 pending 并自动续索引。 */
+  setKnowledgeEnabled(target: KbRef, path: string, enabled: boolean): { readonly started: boolean } {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const src = store.getSource(path)
+    if (src === null) throw new GraphRagError('INVALID', `来源不存在：${path}`)
+    if (enabled) {
+      store.resetSourceToPending(src.id)
+      return { started: this.indexBackground({ id: kb.id }, {}).started }
+    }
+    store.setSourceState(src.id, 'disabled')
+    return { started: false }
+  }
+
+  /** 文件导入：面板选择器给出的绝对路径复制进导入区并后台索引。
+   * 授权语义 = 用户经宿主选择器显式挑选（与 createKb 选目录同一信任链）。 */
+  importFiles(target: KbRef, paths: readonly string[]): { readonly imported: number; readonly skipped: readonly { readonly path: string; readonly reason: string }[]; readonly started: boolean } {
+    const kb = this.resolveKb(target)
+    const dir = this.importsDirOf(kb)
+    mkdirSync(dir, { recursive: true })
+    const skipped: { path: string; reason: string }[] = []
+    let imported = 0
+    for (const p of paths) {
+      try {
+        const st = statSync(p)
+        if (!st.isFile()) { skipped.push({ path: p, reason: '不是常规文件' }); continue }
+        if (st.size > 50 * 1024 * 1024) { skipped.push({ path: p, reason: '超过 50MB 上限' }); continue }
+        // 落在 imports/files/ 子层：扫描根相对路径带 files/ 前缀，避免与
+        // 其他授权根的同名文件在 source.path 上冲突
+        const base = p.split('/').pop() ?? p
+        const filesDir = join(dir, 'files')
+        mkdirSync(filesDir, { recursive: true })
+        let dest = join(filesDir, base)
+        let n = 1
+        while (existsSync(dest)) { dest = join(filesDir, `${n}-${base}`); n++ }
+        copyFileSync(p, dest)
+        imported++
+      } catch (err) {
+        skipped.push({ path: p, reason: err instanceof Error ? err.message : String(err) })
+      }
+    }
+    const started = imported > 0 ? this.indexBackground({ id: kb.id }, {}).started : false
+    return { imported, skipped, started }
+  }
+
+  /** 目录导入：把所选目录下的常规文件（非递归）复制进导入区并后台索引。
+   * 隐藏文件跳过（与扫描器纪律一致）。 */
+  importDirectory(target: KbRef, dir: string): { readonly imported: number; readonly skipped: readonly { readonly path: string; readonly reason: string }[]; readonly started: boolean } {
+    const st = statSync(dir)
+    if (!st.isDirectory()) throw new GraphRagError('INVALID', `不是目录：${dir}`)
+    const paths: string[] = []
+    for (const name of readdirSync(dir).sort()) {
+      if (name.startsWith('.')) continue
+      const full = join(dir, name)
+      if (statSync(full).isFile()) paths.push(full)
+    }
+    return this.importFiles(target, paths)
+  }
+
+  /** 变更同步预览：扫描 diff（纯本地零 LLM），供面板"有变更"提示与一键增量。 */
+  changesPreview(target: KbRef): {
+    readonly added: number; readonly changed: readonly string[]; readonly removed: readonly string[]
+  } {
+    const kb = this.resolveKb(target)
+    const store = this.storeOf(kb)
+    const scan = scanRoots(this.effectiveRoots(kb), this.effectiveRoots(kb), this.config.excludes)
+    const diff = diffAgainstIndex(scan.files, store.listSources())
+    return {
+      added: diff.added.length,
+      changed: diff.changed.slice(0, 20).map(f => f.path),
+      removed: diff.removed.slice(0, 20),
+    }
   }
 
   /** 删除旧知识：整文件图谱级联清除；笔记文件同时删除物理文件。 */

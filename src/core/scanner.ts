@@ -107,6 +107,7 @@ export function diffAgainstIndex(
   for (const f of scanned) {
     const k = knownByPath.get(f.path)
     if (k === undefined) added.push(f)
+    else if (k.state === 'disabled') continue // 停用=用户主动排除，文件变更也不唤醒
     else if (k.contentHash !== f.contentHash) changed.push(f)
   }
   const removed = known
