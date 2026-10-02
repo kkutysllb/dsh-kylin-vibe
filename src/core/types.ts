@@ -371,6 +371,7 @@ export const ERROR_CODES = [
   'NO_PROVIDER',
   'MISSING_CREDENTIAL',
   'ABORTED',
+  'LLM_TIMEOUT',
   'SCHEMA_FUTURE',
 ] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]

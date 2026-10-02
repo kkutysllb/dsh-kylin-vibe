@@ -24,6 +24,7 @@ const ERROR_TEXT: Record<ErrorCode, string> = {
   NO_PROVIDER: '宿主未配置模型 provider；索引与摘要不可用，词法检索与图遍历不受影响。',
   MISSING_CREDENTIAL: '宿主模型凭据缺失；请让用户在宿主模型设置中补全。',
   ABORTED: '已中止；索引进度已存档，可再次 graphrag_index 续跑。',
+  LLM_TIMEOUT: '模型调用超时（该文件已跳过并标记失败）；索引会继续处理其余文件，稍后可单独重试。',
   SCHEMA_FUTURE: '图谱数据由更新版本的插件创建；请先升级插件。',
 }
 

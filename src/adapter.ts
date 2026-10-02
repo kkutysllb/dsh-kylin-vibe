@@ -114,6 +114,64 @@ function mapLlmFailure(code: string | undefined, message: string | undefined): G
   return new GraphRagError('NO_PROVIDER', message ?? `模型调用失败（${code ?? 'UNKNOWN'}）`)
 }
 
+// ── 流消费护栏（0.1.2 实测：无超时的辅助调用会被挂起的 API 流冻结整个
+// 后台索引——AIDC 重索引 14 分钟零进度实证）。空闲超时（无增量）+ 总时长
+// 超时双护栏；触发即 abort 底层请求并抛 LLM_TIMEOUT（extractChunk 归入
+// LLM_ERROR → 文件级失败，ingest 继续下一文件）。
+
+const STREAM_IDLE_MS = 90_000
+const STREAM_TOTAL_MS = 300_000
+
+/** 消费一个流：文本增量累积、失败码透传，带空闲/总时长护栏。 */
+async function consumeStream(
+  stream: AsyncIterable<unknown>,
+  opts: { readonly idleMs: number; readonly totalMs: number; readonly onTimeout?: () => void },
+): Promise<{ text: string; failure?: { code?: string; message?: string } }> {
+  const iter = stream[Symbol.asyncIterator]()
+  const deadline = Date.now() + opts.totalMs
+  let text = ''
+  let failure: { code?: string; message?: string } | undefined
+  for (;;) {
+    const remaining = deadline - Date.now()
+    if (remaining <= 0) {
+      opts.onTimeout?.()
+      throw new GraphRagError('LLM_TIMEOUT', `LLM 流总时长超过 ${Math.round(opts.totalMs / 1000)}s`)
+    }
+    let idle: ReturnType<typeof setTimeout> | undefined
+    const idleRace = new Promise<never>((_, reject) => {
+      idle = setTimeout(
+        () => reject(new GraphRagError('LLM_TIMEOUT', `LLM 流空闲超过 ${Math.round(opts.idleMs / 1000)}s`)),
+        Math.min(opts.idleMs, remaining),
+      )
+    })
+    try {
+      const next = (await Promise.race([iter.next(), idleRace])) as IteratorResult<unknown>
+      if (next.done) return { text, failure }
+      const chunk = next.value
+      const t = chunkText(chunk)
+      if (t !== undefined) { text += t; continue }
+      const f = chunkFailure(chunk)
+      if (f !== undefined) failure = f
+    } catch (err) {
+      opts.onTimeout?.()
+      throw err
+    } finally {
+      if (idle !== undefined) clearTimeout(idle)
+    }
+  }
+}
+
+/** 组合外部 signal 与内部超时 abort。 */
+function linkedSignal(signal: AbortSignal | undefined): { readonly signal: AbortSignal; readonly abort: () => void } {
+  const ac = new AbortController()
+  const onOuter = (): void => ac.abort()
+  if (signal !== undefined) {
+    if (signal.aborted) ac.abort()
+    else signal.addEventListener('abort', onOuter, { once: true })
+  }
+  return { signal: ac.signal, abort: () => { ac.abort(); signal?.removeEventListener('abort', onOuter) } }
+}
+
 /** 把 ctx.llm.stream 包成核心库的 LlmCompleter。RATE_LIMIT 指数退避重试
  * ≤ rateLimitRetries（默认 3，0203 §1.5：llm-retry 挂在 agent 步骤，
  * 不覆盖辅助调用，插件自管）。 */
@@ -137,6 +195,7 @@ export function llmCompleterOf(
       let lastRateLimitMessage = ''
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
         if (signal?.aborted) throw new GraphRagError('ABORTED', '已中止')
+        const linked = linkedSignal(signal)
         const stream = llmService.stream({
           provider: route.provider,
           model: route.model,
@@ -145,16 +204,14 @@ export function llmCompleterOf(
             { role: 'system', content: [{ type: 'text', text: system }] },
             { role: 'user', content: [{ type: 'text', text: user }] },
           ],
-          signal,
+          signal: linked.signal,
         })
-        let out = ''
-        let failure: { code?: string; message?: string } | undefined
-        for await (const chunk of stream) {
-          const text = chunkText(chunk)
-          if (text !== undefined) { out += text; continue }
-          const f = chunkFailure(chunk)
-          if (f !== undefined) failure = f
-        }
+        const { out, failure } = await consumeStream(stream, {
+          idleMs: STREAM_IDLE_MS, totalMs: STREAM_TOTAL_MS, onTimeout: linked.abort,
+        }).then(
+          r => ({ out: r.text, failure: r.failure }),
+          err => { linked.abort(); throw err },
+        )
         if (failure === undefined) return out
         if (failure.code === 'RATE_LIMIT' && attempt < maxRetries) {
           lastRateLimitMessage = failure.message ?? ''
@@ -199,6 +256,7 @@ export function visionCompleterOf(ctx: Context, route: LlmRoute, policy: LlmRetr
   const llmSvc: NonNullable<typeof llm> = llm
 
   const streamOnce = async (system: string, user: string, ref: unknown, signal?: AbortSignal): Promise<string> => {
+    const linked = linkedSignal(signal)
     const stream = llmSvc.stream({
       provider: route.provider,
       model: route.model,
@@ -210,16 +268,11 @@ export function visionCompleterOf(ctx: Context, route: LlmRoute, policy: LlmRetr
           { type: 'image', attachment: ref },
         ] },
       ],
-      signal,
+      signal: linked.signal,
     })
-    let out = ''
-    let failure: { code?: string; message?: string } | undefined
-    for await (const chunk of stream) {
-      const text = chunkText(chunk)
-      if (text !== undefined) { out += text; continue }
-      const f = chunkFailure(chunk)
-      if (f !== undefined) failure = f
-    }
+    const { text: out, failure } = await consumeStream(stream, {
+      idleMs: STREAM_IDLE_MS, totalMs: STREAM_TOTAL_MS, onTimeout: linked.abort,
+    }).catch(err => { linked.abort(); throw err })
     if (failure === undefined) return out
     if (failure.code === 'RATE_LIMIT' && maxRetries > 0) {
       await new Promise<void>(resolve => setTimeout(resolve, baseDelay))
