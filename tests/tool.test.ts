@@ -132,13 +132,21 @@ describe('五工具契约（端到端）', () => {
 
   test('index(create 语义) → query(kb) → graph → status 总览/单库 → forget 全链路（真实 provider）', async () => {
     const cwd = join(dir, 'docs')
-    // index + create：kb 不存在 → 新建库并索引（审批在宿主层，工具本身直接执行）
+    // index + create：kb 不存在 → 新建库并后台索引（审批在宿主层，工具直接执行）
     const idx = defByName('graphrag_index')
-    const r0 = await idx.execute({ kb: '工具冒烟库', create: true, roots: [cwd] }, execOf({})) as { ok: boolean; value: { files: { new: number }; cost: { llmCalls: number } } }
+    const r0 = await idx.execute({ kb: '工具冒烟库', create: true, roots: [cwd] }, execOf({})) as { ok: boolean; value: { started: boolean } }
     assert.equal(r0.ok, true)
-    assert.equal(r0.value.files.new, 2)
-    assert.ok(r0.value.cost.llmCalls >= 2)
+    assert.equal(r0.value.started, true)
     assert.ok(provider.listKbs().some(k => k.name === '工具冒烟库'), 'create 语义应落库注册表')
+    // 后台执行：轮询至完成（fixture 2 文件亚秒级）再继续检索断言
+    const smokeKbId = provider.listKbs().find(k => k.name === '工具冒烟库')!.id
+    for (let i = 0; i < 200; i++) {
+      const p = provider.progress(smokeKbId)
+      if (p?.phase === 'done') break
+      if (p?.phase === 'error') throw new Error(p.error ?? '后台索引失败')
+      await new Promise(resolve => { setTimeout(resolve, 20) })
+    }
+    assert.equal(provider.progress(smokeKbId)?.phase, 'done')
 
     // create 缺 roots → invalid
     const r0b = await idx.execute({ kb: '无目录库', create: true }, execOf({})) as { ok: boolean; error: { code: string } }

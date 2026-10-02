@@ -192,7 +192,7 @@ export function graphragToolDefs(services: ToolServices, config: ToolConfig = {}
 
   const indexDef = {
     name: 'graphrag_index',
-    description: '索引授权目录（或显式指定的已授权子路径）：分块 → LLM 实体关系抽取 → 社区摘要。增量执行，仅处理变更文件。触发 LLM 调用成本，需用户审批。',
+    description: '在后台启动知识图谱索引并立即返回（分块 → LLM 实体关系抽取 → 社区摘要；增量执行，仅处理变更文件）。不等待完成——进度用 graphrag_status 轮询或请用户看面板。触发 LLM 调用成本，需用户审批。',
     parameters: {
       type: 'object',
       properties: {
@@ -203,7 +203,6 @@ export function graphragToolDefs(services: ToolServices, config: ToolConfig = {}
       },
     },
     output: { schema: outputObject.schema, render: jsonRender },
-    timeoutMs: 600_000,
     execute: async (args: unknown, exec: unknown) => {
       const caller = callerFrom(exec)
       try {
@@ -221,9 +220,15 @@ export function graphragToolDefs(services: ToolServices, config: ToolConfig = {}
           }
           resolve().createKb({ name: kbName, roots, description: '由 graphrag_index create 创建' })
         }
-        const signal = (exec as { signal?: AbortSignal } | null)?.signal ?? new AbortController().signal
-        const report = await resolve().index(kbRefOf(a) ?? {}, opts, signal)
-        return { ok: true, value: report }
+        // 后台执行：大语料索引远超工具调用预算（0.2.0 宿主实测 4000+ 路径
+        // 5 分钟即被 abort），绝不在调用内等待 ingest 完成。
+        const started = resolve().indexBackground(kbRefOf(a) ?? {}, opts)
+        return {
+          ok: true,
+          value: started.started
+            ? { started: true, kb: kbName ?? null, note: '索引已在后台启动；用 graphrag_status 轮询进度（phase/filesTotal/lastIndexedAt），完成后 graphrag_query 可检索' }
+            : { started: false, note: '该知识库已有索引在后台运行；用 graphrag_status 查看进度' },
+        }
       } catch (error) {
         return toolEnvelope(error)
       }
