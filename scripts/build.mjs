@@ -55,6 +55,9 @@ await build({
     js: [
       `window.__ModuleLoader__.load({ id: ${JSON.stringify(PACKAGE_ID)}, factory: (require) => {`,
       'var module = { exports: {} }; var exports = module.exports;',
+      // 平台单例模块表的 require 存进 bundle 内变量：运行时软取宿主能力
+      // （如 ui-primitives 的 MarkdownText），缺席宿主回落自有渲染。
+      'var __bundleRequire = typeof require === "function" ? require : undefined;',
     ].join('\n'),
   },
   footer: { js: 'return module.exports; } });' },

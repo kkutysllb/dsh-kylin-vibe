@@ -1,5 +1,7 @@
 /** 浏览与审查视图（0207 §3.3/§3.4）：实体浏览 + 抽样审查 + 体检报告。
  * 数据经 runtime.rpc 直连主机通道；组件保持无状态拉取-渲染。
+ * 证据原文是 markdown 源（md 语料）：经平台单例模块表软取宿主
+ * ui-primitives 的 MarkdownText 渲染；缺席宿主回落 <pre> 原文。
  */
 
 import { useEffect, useState } from 'react'
@@ -7,6 +9,53 @@ import { useEffect, useState } from 'react'
 import { unwrap, type EntityCard, type HealthReport, type ReviewSample } from './protocol.ts'
 import type { KbRuntime, Translate } from './runtime.ts'
 import { RPC_CHANNEL } from './runtime.ts'
+
+/** 平台单例模块表的 require（build.mjs 包装器注入；测试/裸环境 undefined）。 */
+declare const __bundleRequire: ((spec: string) => unknown) | undefined
+
+type MarkdownTextProps = {
+  text: string
+  labels: { code: { copyLabel: string; copiedLabel: string }; footnotes: string }
+  variant?: 'body' | 'compact'
+}
+
+/** memo() 组件是带 $$typeof 的对象而非函数——两种形态都收。 */
+type MarkdownTextFace = React.ComponentType<MarkdownTextProps>
+
+let markdownTextCache: MarkdownTextFace | undefined | null = null
+
+/** 软取宿主 MarkdownText（只找一次）；任何失败回落 undefined。 */
+function markdownTextOf(): MarkdownTextFace | undefined {
+  if (markdownTextCache !== null) return markdownTextCache
+  try {
+    const mod = (typeof __bundleRequire === 'function'
+      ? __bundleRequire('@deepseek-ai/dsh-client-ui-primitives') as { MarkdownText?: MarkdownTextFace } | undefined
+      : undefined)
+    const mt = mod?.MarkdownText
+    markdownTextCache = mt !== null && mt !== undefined && (typeof mt === 'function' || typeof mt === 'object')
+      ? mt
+      : undefined
+  } catch {
+    markdownTextCache = undefined
+  }
+  return markdownTextCache
+}
+
+/** 证据原文渲染：宿主 MarkdownText 在场即渲染 markdown（表格/加粗/标题），
+ * 否则 <pre> 原文。max-height 内滚，避免长 chunk 撑爆卡片。 */
+function ChunkText(props: { readonly text: string; readonly t: Translate }): React.ReactElement {
+  const Markdown = markdownTextOf()
+  if (Markdown === undefined) return <pre className='gv-pre'>{props.text}</pre>
+  return (
+    <div className='gv-pre gv-md'>
+      <Markdown
+        text={props.text}
+        labels={{ code: { copyLabel: props.t('mdCopy'), copiedLabel: props.t('mdCopied') }, footnotes: props.t('mdFootnotes') }}
+        variant='compact'
+      />
+    </div>
+  )
+}
 
 type TabKind = 'browse' | 'review' | 'health'
 
@@ -140,7 +189,7 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
         {current.evidence.map((ev, i) => (
           <div key={i} className='gv-evidence'>
             <div className='gv-cost'>{ev.path}:{ev.startLine}-{ev.endLine}</div>
-            <pre className='gv-pre'>{ev.text}</pre>
+            <ChunkText text={ev.text} t={t} />
           </div>
         ))}
         <div className='gv-actions'>

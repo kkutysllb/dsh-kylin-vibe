@@ -88,6 +88,9 @@ export const zh = {
   delegateCopied: '提示词已复制到剪贴板——请粘贴到会话发送',
   delegateNone: '无法投递到会话（剪贴板也不可用）',
   delegateRootsRequired: '请先选择或填写至少一个授权目录',
+  mdCopy: '复制',
+  mdCopied: '已复制',
+  mdFootnotes: '脚注',
 } as const
 
 export type DictKey = keyof typeof zh
@@ -175,6 +178,9 @@ export const en: Record<DictKey, string> = {
   delegateCopied: 'Prompt copied to clipboard — paste it into the conversation',
   delegateNone: 'Could not reach the conversation (clipboard unavailable too)',
   delegateRootsRequired: 'Pick or type at least one authorized directory first',
+  mdCopy: 'Copy',
+  mdCopied: 'Copied',
+  mdFootnotes: 'Footnotes',
 }
 
 export const dictionaries = { zh, en }
