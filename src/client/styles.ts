@@ -51,11 +51,11 @@ const CSS = `
 .gv-bar-fill { height: 100%; background: var(--gv-primary); transition: width .4s; }
 .gv-current { font-size: 11px; color: var(--gv-fg-muted); word-break: break-all; }
 .gv-form { border: 1px dashed var(--gv-border); border-radius: 10px; padding: 12px 14px; margin-bottom: 12px; }
-.gv-form label { display: block; margin: 8px 0 4px; font-size: 12px; color: var(--gv-fg-secondary); }
-.gv-form input, .gv-form textarea, .gv-search input { width: 100%; box-sizing: border-box; border: 1px solid var(--gv-border); border-radius: 8px; padding: 6px 8px; background: transparent; color: var(--gv-fg); font-size: 13px; font-family: inherit; }
+.gv-form label, .gv-card label { display: block; margin: 8px 0 4px; font-size: 12px; color: var(--gv-fg-secondary); }
+.gv-form input, .gv-card input, .gv-form textarea, .gv-card textarea, .gv-search input { width: 100%; box-sizing: border-box; border: 1px solid var(--gv-border); border-radius: 8px; padding: 6px 8px; background: transparent; color: var(--gv-fg); font-size: 13px; font-family: inherit; }
 .gv-select { width: 100%; box-sizing: border-box; border: 1px solid var(--gv-border); border-radius: 8px; padding: 6px 8px; background: transparent; color: var(--gv-fg); font-size: 12px; font-family: inherit; }
 .gv-select option { color: #1f2329; background: #fff; }
-.gv-form textarea { min-height: 56px; resize: vertical; }
+.gv-form textarea, .gv-card textarea { min-height: 56px; resize: vertical; }
 .gv-error { color: var(--gv-error); margin: 10px 0; }
 .gv-empty { color: var(--gv-fg-muted); padding: 24px 0; text-align: center; }
 .gv-cost { font-size: 11px; color: var(--gv-fg-muted); }

@@ -338,9 +338,9 @@ function ManageTab(props: {
       <div className='gv-card'>
         <div className='gv-card-head'><span className='gv-name'>{t('manageAddTitle')}</span></div>
         <label>{t('manageAddName')}</label>
-        <input value={title} onChange={e => setTitle(e.target.value)} />
+        <input value={title} onChange={e => setTitle(e.target.value)} placeholder={t('manageAddNameHint')} />
         <label>{t('manageAddText')}</label>
-        <textarea value={text} onChange={e => setText(e.target.value)} style={{ minHeight: 90 }} />
+        <textarea value={text} onChange={e => setText(e.target.value)} style={{ minHeight: 140 }} placeholder={t('manageAddTextHint')} />
         <div className='gv-actions'>
           <button className='gv-btn gv-btn-primary' disabled={busy || text.trim() === ''} onClick={addText}>{t('manageAddSubmit')}</button>
         </div>
