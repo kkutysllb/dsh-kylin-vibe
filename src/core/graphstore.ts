@@ -71,6 +71,8 @@ export interface EdgeRow {
   readonly relation: Relation
   readonly srcName: string
   readonly dstName: string
+  readonly srcType: string
+  readonly dstType: string
 }
 
 export interface SubgraphRows {
@@ -496,11 +498,11 @@ export class SqliteGraphStore {
       params.push(...types)
     }
     const rows = this.db.prepare(
-      `SELECT r.*, se.name AS src_name, de.name AS dst_name FROM relation r
+      `SELECT r.*, se.name AS src_name, de.name AS dst_name, se.type AS src_type, de.type AS dst_type FROM relation r
        JOIN entity se ON se.id = r.src_id JOIN entity de ON de.id = r.dst_id
        WHERE ${conds.join(' AND ')} ORDER BY r.weight DESC`,
-    ).all(...params) as unknown as Array<RelationRowRaw & { src_name: string; dst_name: string }>
-    return rows.map(r => ({ relation: this.mapRelation(r), srcName: r.src_name, dstName: r.dst_name }))
+    ).all(...params) as unknown as Array<RelationRowRaw & { src_name: string; dst_name: string; src_type: string; dst_type: string }>
+    return rows.map(r => ({ relation: this.mapRelation(r), srcName: r.src_name, dstName: r.dst_name, srcType: r.src_type, dstType: r.dst_type }))
   }
 
   /** BFS 遍历：节点预算硬上限 + 截断标记（0203 §2.3）。 */
@@ -646,11 +648,11 @@ export class SqliteGraphStore {
     const ph = [...entityIds].map(() => '?').join(',')
     const params = [...entityIds].map(BigInt)
     const rows = this.db.prepare(
-      `SELECT r.*, se.name AS src_name, de.name AS dst_name FROM relation r
+      `SELECT r.*, se.name AS src_name, de.name AS dst_name, se.type AS src_type, de.type AS dst_type FROM relation r
        JOIN entity se ON se.id = r.src_id JOIN entity de ON de.id = r.dst_id
        WHERE r.src_id IN (${ph}) AND r.dst_id IN (${ph}) ORDER BY r.weight DESC LIMIT ?`,
-    ).all(...params, ...params, BigInt(limit)) as unknown as Array<RelationRowRaw & { src_name: string; dst_name: string }>
-    return rows.map(r => ({ relation: this.mapRelation(r), srcName: r.src_name, dstName: r.dst_name }))
+    ).all(...params, ...params, BigInt(limit)) as unknown as Array<RelationRowRaw & { src_name: string; dst_name: string; src_type: string; dst_type: string }>
+    return rows.map(r => ({ relation: this.mapRelation(r), srcName: r.src_name, dstName: r.dst_name, srcType: r.src_type, dstType: r.dst_type }))
   }
 
   /** chunk 内被提及的实体 id（chunk FTS 反查种子的桥，0203 §2.1）。 */

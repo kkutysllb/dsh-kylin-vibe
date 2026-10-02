@@ -476,6 +476,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
           type: rel.type,
           weight: rel.weight,
           other: rel.srcId === e.id ? edge.dstName : edge.srcName,
+          otherId: rel.srcId === e.id ? rel.dstId : rel.srcId,
+          otherType: rel.srcId === e.id ? edge.dstType : edge.srcType,
           evidence,
         }
       })

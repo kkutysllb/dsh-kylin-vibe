@@ -4,7 +4,7 @@
  * ui-primitives 的 MarkdownText 渲染；缺席宿主回落 <pre> 原文。
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { unwrap, type EntityCard, type HealthReport, type ReviewSample } from './protocol.ts'
 import type { KbRuntime, Translate } from './runtime.ts'
@@ -163,45 +163,361 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   useEffect(() => { load('') }, [kbId])
 
   return (
-    <div>
-      <div className='gv-search'>
-        <input
-          value={query}
-          placeholder={t('searchPlaceholder')}
-          onChange={e => setQuery(e.target.value)}
-          onKeyDown={e => { if (e.key === 'Enter') load(query) }}
-        />
-        <button className='gv-btn' onClick={() => load(query)}>{t('search')}</button>
-      </div>
-      {loading && <div className='gv-empty'>{t('loading')}</div>}
-      {!loading && cards.length === 0 && <div className='gv-empty'>{t('noEntities')}</div>}
-      {cards.map(card => (
-        <div key={card.id} className='gv-card'>
-          <div className='gv-card-head'>
-            <span className='gv-name'>{card.name}</span>
-            <span className='gv-badge'>{card.type}</span>
-            <span className='gv-badge'>deg {card.degree}</span>
-          </div>
-          {card.description !== null && card.description !== '' && <div>{card.description}</div>}
-          {card.neighbors.length > 0 && (
-            <table className='gv-table'>
-              <tbody>
-                {card.neighbors.map((nb, i) => (
-                  <tr key={i}>
-                    <td>{nb.dir === 'out' ? '→' : '←'}</td>
-                    <td>{nb.type}</td>
-                    <td>{nb.other}</td>
-                    <td className='gv-cost'>w={nb.weight}{nb.evidence.length > 0 ? ` · ${nb.evidence[0]?.path}:${nb.evidence[0]?.lines}` : ''}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
+    <div className='gv-split'>
+      <div className='gv-split-left'>
+        <div className='gv-search'>
+          <input
+            value={query}
+            placeholder={t('searchPlaceholder')}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') load(query) }}
+          />
+          <button className='gv-btn' onClick={() => load(query)}>{t('search')}</button>
         </div>
-      ))}
+        {loading && <div className='gv-empty'>{t('loading')}</div>}
+        {!loading && cards.length === 0 && <div className='gv-empty'>{t('noEntities')}</div>}
+        {cards.map(card => (
+          <div key={card.id} id={`gv-card-${card.id}`} className='gv-card'>
+            <div className='gv-card-head'>
+              <span className='gv-name'>{card.name}</span>
+              <span className='gv-badge'>{card.type}</span>
+              <span className='gv-badge'>deg {card.degree}</span>
+            </div>
+            {card.description !== null && card.description !== '' && <div>{card.description}</div>}
+            {card.neighbors.length > 0 && (
+              <table className='gv-table'>
+                <tbody>
+                  {card.neighbors.map((nb, i) => (
+                    <tr key={i}>
+                      <td>{nb.dir === 'out' ? '→' : '←'}</td>
+                      <td>{nb.type}</td>
+                      <td>{nb.other}</td>
+                      <td className='gv-cost'>w={nb.weight}{nb.evidence.length > 0 ? ` · ${nb.evidence[0]?.path}:${nb.evidence[0]?.lines}` : ''}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className='gv-split-right'>
+        <GraphView cards={cards} t={t} />
+      </div>
     </div>
   )
 }
+
+// ── 图谱视图（Neo4j 风格力导向图；数据全部来自真实浏览结果，非示意）────────
+
+const TYPE_COLORS: Record<string, string> = {
+  module: '#4b7bec', file: '#a55eea', function: '#26de81', class: '#fd9644',
+  type: '#fc5c65', concept: '#45aaf2', config: '#a5b1c2', cli: '#6ab04c',
+  api: '#e84393', external_dependency: '#eb3b5a', test: '#2bcbba',
+}
+function typeColor(t: string): string {
+  return TYPE_COLORS[t] ?? '#8892a0'
+}
+
+interface GraphNodeData {
+  readonly id: number
+  readonly key: string
+  readonly name: string
+  readonly type: string
+  readonly degree: number
+  readonly isCard: boolean
+  x: number
+  y: number
+}
+interface GraphEdgeData {
+  readonly key: string
+  readonly s: number
+  readonly t: number
+  readonly type: string
+  readonly weight: number
+  readonly evidence: string
+}
+
+/** 由浏览卡片构建节点/边：实体按 id 去重，关系按无向三元组去重
+ * （同一关系会同时出现在两张卡的邻居表里）。 */
+function buildGraph(cards: readonly EntityCard[]): { readonly nodes: GraphNodeData[]; readonly edges: readonly GraphEdgeData[] } {
+  const byId = new Map<number, GraphNodeData>()
+  const edgeByKey = new Map<string, GraphEdgeData>()
+  const addNode = (id: number, name: string, type: string, degree: number, isCard: boolean): void => {
+    if (byId.has(id)) {
+      if (isCard) {
+        const n = byId.get(id)!
+        byId.set(id, { ...n, degree: Math.max(n.degree, degree), isCard: true })
+      }
+      return
+    }
+    byId.set(id, { id, key: `n${id}`, name, type, degree, isCard, x: 0, y: 0 })
+  }
+  for (const c of cards) addNode(c.id, c.name, c.type, c.degree, true)
+  for (const c of cards) {
+    for (const nb of c.neighbors) {
+      addNode(nb.otherId, nb.other, nb.otherType, 0, false)
+      const a = c.id
+      const b = nb.otherId
+      if (a === b) continue
+      const key = a < b ? `${a}|${b}|${nb.type}` : `${b}|${a}|${nb.type}`
+      if (edgeByKey.has(key)) continue
+      const ev = nb.evidence[0]
+      edgeByKey.set(key, {
+        key, s: nb.dir === 'out' ? a : b, t: nb.dir === 'out' ? b : a,
+        type: nb.type, weight: nb.weight,
+        evidence: ev !== undefined ? `${ev.path}:${ev.lines}` : '',
+      })
+    }
+  }
+  const nodes = [...byId.values()]
+  const edges = [...edgeByKey.values()]
+  return { nodes, edges }
+}
+
+/** Fruchterman-Reingold 简化实现：库仑斥力 + 弹簧 + 向心力，退火迭代。 */
+function simulate(nodes: GraphNodeData[], edges: readonly GraphEdgeData[], width: number, height: number, ticks: number): void {
+  const n = nodes.length
+  if (n === 0) return
+  const radius = Math.min(width, height) * 0.38
+  nodes.forEach((node, i) => {
+    const angle = (2 * Math.PI * i) / n
+    node.x = width / 2 + radius * Math.cos(angle)
+    node.y = height / 2 + radius * Math.sin(angle)
+  })
+  const k = Math.sqrt((width * height) / Math.max(n, 1)) * 0.85
+  const index = new Map(nodes.map((node, i) => [node.key, i] as const))
+  const adjacency: { readonly other: number; readonly rest: number }[][] = nodes.map(() => [])
+  for (const e of edges) {
+    const si = index.get(`n${e.s}`)
+    const ti = index.get(`n${e.t}`)
+    if (si === undefined || ti === undefined) continue
+    adjacency[si]?.push({ other: ti, rest: k * 1.35 })
+    adjacency[ti]?.push({ other: si, rest: k * 1.35 })
+  }
+  let alpha = 1
+  const disp = nodes.map(() => ({ x: 0, y: 0 }))
+  for (let tick = 0; tick < ticks; tick++) {
+    for (let i = 0; i < n; i++) {
+      disp[i]!.x = 0
+      disp[i]!.y = 0
+      const a = nodes[i]!
+      for (let j = 0; j < n; j++) {
+        if (i === j) continue
+        const b = nodes[j]!
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        let d2 = dx * dx + dy * dy
+        if (d2 < 1) { dx = (Math.random() - 0.5); dy = (Math.random() - 0.5); d2 = dx * dx + dy * dy + 0.01 }
+        const d = Math.sqrt(d2)
+        const f = (k * k) / d
+        disp[i]!.x += (dx / d) * f
+        disp[i]!.y += (dy / d) * f
+      }
+    }
+    for (const e of edges) {
+      const si = index.get(`n${e.s}`)
+      const ti = index.get(`n${e.t}`)
+      if (si === undefined || ti === undefined) continue
+      const a = nodes[si]!
+      const b = nodes[ti]!
+      const dx = a.x - b.x
+      const dy = a.y - b.y
+      const d = Math.max(Math.sqrt(dx * dx + dy * dy), 1)
+      const spring = adjacency[si]!.find(x => x.other === ti)?.rest ?? k * 1.35
+      const f = (d * d) / spring
+      disp[si]!.x -= (dx / d) * f
+      disp[si]!.y -= (dy / d) * f
+      disp[ti]!.x += (dx / d) * f
+      disp[ti]!.y += (dy / d) * f
+    }
+    for (let i = 0; i < n; i++) {
+      const node = nodes[i]!
+      const dx = node.x - width / 2
+      const dy = node.y - height / 2
+      disp[i]!.x -= dx * 0.035
+      disp[i]!.y -= dy * 0.035
+      const d = Math.max(Math.sqrt(disp[i]!.x * disp[i]!.x + disp[i]!.y * disp[i]!.y), 1)
+      const limit = Math.min(d, 30) * alpha
+      node.x += (disp[i]!.x / d) * limit
+      node.y += (disp[i]!.y / d) * limit
+      node.x = Math.max(30, Math.min(width - 30, node.x))
+      node.y = Math.max(26, Math.min(height - 26, node.y))
+    }
+    alpha *= 0.97
+  }
+}
+
+function GraphView(props: { readonly cards: readonly EntityCard[]; readonly t: Translate }): React.ReactElement {
+  const { cards, t } = props
+  const W = 920
+  const H = 640
+  const graph = useMemo(() => {
+    const built = buildGraph(cards)
+    simulate(built.nodes as GraphNodeData[], built.edges, W, H, cards.length > 0 ? 260 : 0)
+    return built
+  }, [cards])
+  const [positions, setPositions] = useState<Map<string, { x: number; y: number }>>(new Map())
+  useEffect(() => {
+    setPositions(new Map(graph.nodes.map(n => [n.key, { x: n.x, y: n.y }] as const)))
+  }, [graph])
+  const [view, setView] = useState({ x: 0, y: 0, k: 1 })
+  const [hover, setHover] = useState<string | null>(null)
+  const dragNode = useRef<{ key: string } | null>(null)
+  const panState = useRef<{ sx: number; sy: number; ox: number; oy: number } | null>(null)
+  const svgRef = useRef<SVGSVGElement | null>(null)
+
+
+
+  const connected = useMemo(() => {
+    if (hover === null) return null
+    const set = new Set<string>()
+    for (const e of graph.edges) {
+      if (`n${e.s}` === hover || `n${e.t}` === hover) { set.add(e.key); set.add(`n${e.s}`); set.add(`n${e.t}`) }
+    }
+    set.add(hover)
+    return set
+  }, [hover, graph])
+
+  const toGraph = (clientX: number, clientY: number): { x: number; y: number } => {
+    const rect = svgRef.current?.getBoundingClientRect()
+    if (rect === undefined || rect === null) return { x: 0, y: 0 }
+    const sx = ((clientX - rect.left) / rect.width) * W
+    const sy = ((clientY - rect.top) / rect.height) * H
+    return { x: (sx - view.x) / view.k, y: (sy - view.y) / view.k }
+  }
+
+  const nodeRadius = (n: GraphNodeData): number => 5 + Math.min(11, Math.sqrt(n.degree) * 1.6) + (n.isCard ? 1.5 : 0)
+  const typesUsed = useMemo(() => {
+    const set = new Map<string, number>()
+    for (const n of graph.nodes) set.set(n.type, (set.get(n.type) ?? 0) + 1)
+    return [...set.entries()].sort((a, b) => b[1] - a[1])
+  }, [graph])
+
+  if (cards.length === 0) {
+    return (
+      <div className='gv-graph'>
+        <div className='gv-empty'>{t('noEntities')}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div className='gv-graph'>
+      <div className='gv-graph-head'>
+        <span className='gv-name'>{t('graphTitle')}</span>
+        <span className='gv-badge'>{t('graphCounts', { nodes: graph.nodes.length, edges: graph.edges.length })}</span>
+      </div>
+      <div className='gv-legend'>
+        {typesUsed.map(([type, count]) => (
+          <span key={type} title={type}><i style={{ background: typeColor(type) }} />{type} {count}</span>
+        ))}
+      </div>
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${W} ${H}`}
+        onWheel={e => {
+          e.preventDefault()
+          const factor = e.deltaY > 0 ? 0.9 : 1.1
+          setView(v => {
+            const k = Math.max(0.35, Math.min(3, v.k * factor))
+            const rect = svgRef.current?.getBoundingClientRect()
+            if (rect === undefined || rect === null) return { ...v, k }
+            const cx = ((e.clientX - rect.left) / rect.width) * W
+            const cy = ((e.clientY - rect.top) / rect.height) * H
+            return { k, x: cx - ((cx - v.x) * k) / v.k, y: cy - ((cy - v.y) * k) / v.k }
+          })
+        }}
+        onPointerDown={e => {
+          if ((e.target as Element).tagName === 'circle' || (e.target as Element).tagName === 'text') return
+          panState.current = { sx: e.clientX, sy: e.clientY, ox: view.x, oy: view.y }
+          ;(e.target as Element).setPointerCapture?.(e.pointerId)
+        }}
+        onPointerMove={e => {
+          const pan = panState.current
+          if (pan !== null) {
+            const rect = svgRef.current?.getBoundingClientRect()
+            if (rect === undefined || rect === null) return
+            setView(v => ({ ...v, x: pan.ox + ((e.clientX - pan.sx) / rect.width) * W, y: pan.oy + ((e.clientY - pan.sy) / rect.height) * H }))
+            return
+          }
+          const drag = dragNode.current
+          if (drag === null) return
+          const p = toGraph(e.clientX, e.clientY)
+          setPositions(prev => new Map(prev).set(drag.key, p))
+        }}
+        onPointerUp={() => { panState.current = null; dragNode.current = null }}
+        onPointerLeave={() => { panState.current = null; dragNode.current = null }}
+      >
+        <defs>
+          <marker id='gv-arrow' viewBox='0 0 10 10' refX='11' refY='5' markerWidth='7' markerHeight='7' orient='auto-start-reverse'>
+            <path d='M 0 0 L 10 5 L 0 10 z' fill='#8f98a8' />
+          </marker>
+        </defs>
+        <g transform={`translate(${view.x},${view.y}) scale(${view.k})`}>
+          {graph.edges.map(e => {
+            const sp = positions.get(`n${e.s}`)
+            const tp = positions.get(`n${e.t}`)
+            if (sp === undefined || tp === undefined) return null
+            const dim = connected !== null && !connected.has(e.key)
+            const hot = hover !== null && connected !== null && connected.has(e.key)
+            const mx = (sp.x + tp.x) / 2
+            const my = (sp.y + tp.y) / 2
+            return (
+              <g key={e.key} opacity={dim ? 0.08 : 1}>
+                <line x1={sp.x} y1={sp.y} x2={tp.x} y2={tp.y} stroke='#5b6472' strokeWidth={hot ? 2 : Math.min(1 + e.weight * 0.4, 3)} marker-end='url(#gv-arrow)'>
+                  <title>{`${e.type} w=${e.weight}${e.evidence !== '' ? ` · ${e.evidence}` : ''}`}</title>
+                </line>
+                <text x={mx} y={my - 3} fontSize={9} fill='#9aa3ad' textAnchor='middle' opacity={hot ? 1 : 0.55}>
+                  {`${e.type}${e.weight > 1 ? `·w${e.weight}` : ''}`}
+                  <title>{`${e.type} w=${e.weight}${e.evidence !== '' ? ` · ${e.evidence}` : ''}`}</title>
+                </text>
+              </g>
+            )
+          })}
+          {graph.nodes.map(n => {
+            const p = positions.get(n.key)
+            if (p === undefined) return null
+            const r = nodeRadius(n)
+            const dim = connected !== null && !connected.has(n.key)
+            return (
+              <g key={n.key} opacity={dim ? 0.15 : 1}
+                onPointerDown={e => {
+                  e.stopPropagation()
+                  dragNode.current = { key: n.key }
+                  ;(e.target as Element).setPointerCapture?.(e.pointerId)
+                }}
+                onPointerUp={e => {
+                  e.stopPropagation()
+                  if (dragNode.current !== null) {
+                    const card = cards.find(c => c.id === n.id)
+                    if (card !== undefined && n.isCard) {
+                      document.getElementById(`gv-card-${n.id}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                    }
+                  }
+                  dragNode.current = null
+                }}
+                onPointerEnter={() => setHover(n.key)}
+                onPointerLeave={() => setHover(null)}
+                style={{ cursor: 'pointer' }}
+              >
+                <circle cx={p.x} cy={p.y} r={r} fill={typeColor(n.type)} stroke={n.isCard ? '#ffffff55' : 'none'} strokeWidth={n.isCard ? 1.5 : 0}>
+                  <title>{`${n.name}（${n.type}，deg ${n.degree}）`}</title>
+                </circle>
+                <text x={p.x} y={p.y + r + 11} fontSize={10.5} fill='#d5dae2' textAnchor='middle'>
+                  {n.name.length > 14 ? `${n.name.slice(0, 13)}…` : n.name}
+                  <title>{n.name}</title>
+                </text>
+              </g>
+            )
+          })}
+        </g>
+      </svg>
+      <div className='gv-graph-hint'>{t('graphHint')}</div>
+    </div>
+  )
+}
+
 
 function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; readonly kbId: string }): React.ReactElement {
   const { runtime, t, kbId } = props

@@ -69,4 +69,14 @@ const CSS = `
 .gv-md { max-height: 420px; overflow-y: auto; font-size: 12px; }
 .gv-selchip { position: fixed; z-index: 90; box-shadow: 0 4px 14px rgba(0,0,0,.25); }
 .gv-pre { background: var(--gv-fill); border-radius: 8px; padding: 8px; font-size: 11px; overflow-x: auto; white-space: pre-wrap; word-break: break-all; color: var(--gv-fg); }
+.gv-split { display: flex; gap: 12px; align-items: flex-start; }
+.gv-split-left { flex: 1 1 0; min-width: 0; }
+.gv-split-right { flex: 0 0 44%; min-width: 300px; position: sticky; top: 0; }
+.gv-graph { border: 1px solid var(--gv-border); border-radius: 10px; background: rgba(127,127,127,.05); height: 78vh; max-height: 860px; min-height: 420px; position: relative; overflow: hidden; }
+.gv-graph svg { width: 100%; height: 100%; display: block; cursor: grab; }
+.gv-graph-head { position: absolute; top: 8px; left: 10px; right: 10px; display: flex; align-items: center; gap: 8px; z-index: 2; pointer-events: none; }
+.gv-graph-head .gv-name { font-size: 12px; }
+.gv-legend { position: absolute; top: 30px; left: 10px; display: flex; flex-wrap: wrap; gap: 6px 10px; font-size: 10.5px; color: var(--gv-fg-muted); max-width: 70%; z-index: 2; pointer-events: none; }
+.gv-legend i { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 4px; }
+.gv-graph-hint { position: absolute; bottom: 6px; right: 10px; font-size: 10px; color: var(--gv-fg-muted); pointer-events: none; }
 `

@@ -60,6 +60,9 @@ export interface EntityNeighbor {
   readonly type: string
   readonly weight: number
   readonly other: string
+  /** 对端实体（图谱视图需要真实 id 与类型配色）。 */
+  readonly otherId: number
+  readonly otherType: string
   readonly evidence: readonly { readonly path: string; readonly lines: string }[]
 }
 
