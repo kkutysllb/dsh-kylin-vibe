@@ -6,7 +6,7 @@
  *   移入 `kbs/legacy-<hash6>/` 并注册同名 KB（roots 取当时 provider 配置）
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { GraphRagError, normName, type KnowledgeBase, type KbManaged } from './types.ts'
@@ -82,10 +82,18 @@ export class KbRegistry {
     return this.kbs.find(k => normName(k.name) === key)
   }
 
-  /** cwd（realpath 后）落在唯一 KB 的某 root 内 → 该 KB；零/多命中 → undefined。 */
-  byCwd(cwdReal: string): KnowledgeBase | undefined {
+  /** cwd 落在唯一 KB 的某 root 内 → 该 KB；零/多命中 → undefined。
+   * 比较对两种形态兜底（macOS /var 与 /private/var）：优先 realpath 规范化
+   * 比较；cwd 不存在（realpath 失败）时回落原始串对原始根比较。 */
+  byCwd(cwd: string): KnowledgeBase | undefined {
     this.refreshIfChanged()
-    const hits = this.kbs.filter(k => k.roots.some(r => cwdReal === r || cwdReal.startsWith(`${r}/`)))
+    const realOf = (p: string): string => {
+      try { return realpathSync(p) } catch { return p }
+    }
+    const hits = this.kbs.filter(k => k.roots.some(r => {
+      const rr = realOf(r)
+      return cwd === rr || cwd.startsWith(`${rr}/`) || cwd === r || cwd.startsWith(`${r}/`)
+    }))
     return hits.length === 1 ? hits[0] : undefined
   }
 

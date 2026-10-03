@@ -5,10 +5,11 @@
  * 不触碰工具面（tool.ts）。
  */
 
-import { copyFileSync, mkdirSync, existsSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, mkdirSync, existsSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf, watchSessionRoutes, type SessionRouteWatcher } from './adapter.ts'
+import { estimateTokens } from './core/chunker.ts'
 import type { ChunkOptions } from './core/chunker.ts'
 import { extractChunk, type LlmCompleter, type VisionCompleter } from './core/extractor.ts'
 import { runIngest, type CommunitySummarizer, type IngestConfig } from './core/ingest.ts'
@@ -16,7 +17,7 @@ import { extractTerms } from './core/lexical.ts'
 import { KbRegistry, migrateLegacyWorkspaces } from './core/kb.ts'
 import { SqliteGraphStore } from './core/graphstore.ts'
 import { diffAgainstIndex, scanRoots } from './core/scanner.ts'
-import { searchGlobal, searchLocal, searchTraversal } from './core/search.ts'
+import { lexicalGlobalScorer, searchGlobal, searchLocal, searchTraversal, type GlobalScorer } from './core/search.ts'
 import {
   GraphRagError,
   type EvidencePack, type ForgetReport, type ForgetTarget, type IndexProgress,
@@ -124,6 +125,45 @@ function summarizerOf(llm: LlmCompleter): CommunitySummarizer {
   }
 }
 
+/** global 的 LLM 打分器（0203 §2.2 map）：摘要 10 个/批送 LLM 打 0-10 分；
+ * 单批解析失败回落该批词法分（检索可用性优先于打分质量）。成本（调用数/
+ * token）随结果返回进 QueryMeta。 */
+export function llmGlobalScorer(llm: LlmCompleter, batchSize = 10): GlobalScorer {
+  return {
+    score: lexicalGlobalScorer.score,
+    async scoreAll(question, summaries) {
+      const scores = summaries.map(() => 0)
+      let llmCalls = 0
+      let tokensIn = 0
+      let tokensOut = 0
+      for (let i = 0; i < summaries.length; i += batchSize) {
+        const batch = summaries.slice(i, i + batchSize)
+        const user = `问题：${question}\n\n${batch.map((s, j) => `[${i + j}] ${s}`).join('\n\n')}`
+        llmCalls++
+        tokensIn += estimateTokens(user)
+        try {
+          const out = await llm.complete(
+            '你是知识社区相关性打分器。给定问题与若干社区摘要，为每条摘要打 0-10 的整数相关分（10=直接回答该问题，0=无关）。仅输出 JSON：{"scores":[9, 3, …]}，数组长度与输入条数一致。',
+            user,
+          )
+          tokensOut += estimateTokens(out)
+          const parsed = JSON.parse(out.slice(out.indexOf('{'), out.lastIndexOf('}') + 1)) as { scores?: unknown }
+          if (Array.isArray(parsed.scores)) {
+            parsed.scores.forEach((v, j) => {
+              if (typeof v === 'number' && Number.isFinite(v) && i + j < scores.length) scores[i + j] = Math.min(10, Math.max(0, v))
+            })
+            continue
+          }
+        } catch {
+          tokensOut += 0 // 调用失败：该批回落词法分
+        }
+        batch.forEach((s, j) => { scores[i + j] = lexicalGlobalScorer.score(question, s) })
+      }
+      return { scores, llmCalls, tokensIn, tokensOut }
+    },
+  }
+}
+
 // ── Provider 实现 ────────────────────────────────────────────────────────────
 
 export interface LocalProviderDeps {
@@ -135,15 +175,28 @@ export interface LocalProviderDeps {
   readonly routes?: SessionRouteWatcher | null
 }
 
+/** 抽样审查统计（0207 §4.2）：持久化到 `<kbDir>/review.json`。 */
+interface ReviewStats {
+  readonly sampled: number
+  readonly correct: number
+  readonly corrected: number
+  /** 低置信区间（<0.8）单独统计。 */
+  readonly lowConfSampled: number
+  readonly lowConfCorrect: number
+}
+
+const EMPTY_REVIEW_STATS: ReviewStats = { sampled: 0, correct: 0, corrected: 0, lowConfSampled: 0, lowConfCorrect: 0 }
+
 export class LocalGraphRagProvider implements GraphRagProvider {
   readonly id = 'local-sqlite'
   private readonly registry: KbRegistry
   private readonly stores = new Map<string, SqliteGraphStore>()
   private readonly directLlm: LlmCompleter | null
   private cachedLlm: LlmCompleter | null | undefined
-  /** 审查状态（按 KB）：排除的关系 id 集 + 抽样统计。 */
+  /** 审查状态（按 KB）：排除的关系 id 集（内存视图，权威在库 confidence<0）
+   * + 抽样统计（持久化 review.json，0207 §4.2）。 */
   private readonly reviewExclude = new Map<string, Set<number>>()
-  private readonly reviewStats = new Map<string, { sampled: number; correct: number; corrected: number }>()
+  private readonly reviewStats = new Map<string, ReviewStats>()
 
   constructor(private readonly config: ProviderConfig, private readonly deps: LocalProviderDeps, declared: readonly { name: string; roots: string[]; description: string | null }[] = []) {
     this.directLlm = deps.llm ?? null
@@ -196,6 +249,13 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return this.cachedVision
   }
 
+  /** global 打分器（0203 §2.2）：llm 可用时注入分批 LLM 打分（10 个/批，
+   * 词法兜底）；不可用时回落纯词法——查询零 LLM 的降级语义保持可用。 */
+  private globalScorer(): GlobalScorer {
+    const llm = this.completer()
+    return llm === null ? lexicalGlobalScorer : llmGlobalScorer(llm)
+  }
+
   // ── KB 管理面 ─────────────────────────────────────────────────────────────
 
   listKbs(): readonly KnowledgeBase[] {
@@ -227,7 +287,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     }
   }
 
-  /** KB 解析链（0207 §2.2）：id → name → cwd 命中唯一库 → 唯一库；否则候选。 */
+  /** KB 解析链（0207 §2.2）：id → name → ①cwd 命中唯一库 → ②唯一库 → ③候选。 */
   resolveKb(ref: KbRef | undefined, cwd?: string): KnowledgeBase {
     if (ref?.id !== undefined && ref.id !== '') {
       const kb = this.registry.byId(ref.id)
@@ -240,13 +300,13 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       return kb
     }
     const all = this.registry.list()
-    if (all.length === 1) return all[0] as KnowledgeBase
     if (cwd !== undefined) {
       let cwdReal = cwd
       try { cwdReal = realpathSync(cwd) } catch { /* 保持原值 */ }
       const byCwd = this.registry.byCwd(cwdReal)
       if (byCwd !== undefined) return byCwd
     }
+    if (all.length === 1) return all[0] as KnowledgeBase
     if (all.length === 0) throw new GraphRagError('NOT_INDEXED', '尚无任何知识库；先在面板创建，或调用 graphrag_index（kb + create）')
     throw new GraphRagError('KB_AMBIGUOUS', `存在多个知识库，请指定 kb：${this.kbNames()}`)
   }
@@ -278,6 +338,41 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   dispose(): void {
     for (const s of this.stores.values()) s.close()
     this.stores.clear()
+  }
+
+  // ── 审查统计持久化（review.json，0207 §4.2）─────────────────────────────
+
+  private reviewFileOf(kbId: string): string {
+    return join(this.kbDir(kbId), 'review.json')
+  }
+
+  /** 读（带缓存）；文件损坏回落零值不阻塞审查。 */
+  private reviewStatsOf(kbId: string): ReviewStats {
+    const cached = this.reviewStats.get(kbId)
+    if (cached !== undefined) return cached
+    let stats = EMPTY_REVIEW_STATS
+    try {
+      const raw = JSON.parse(readFileSync(this.reviewFileOf(kbId), 'utf8')) as Partial<ReviewStats>
+      if (typeof raw.sampled === 'number' && Number.isFinite(raw.sampled)) {
+        stats = {
+          sampled: raw.sampled,
+          correct: typeof raw.correct === 'number' ? raw.correct : 0,
+          corrected: typeof raw.corrected === 'number' ? raw.corrected : 0,
+          lowConfSampled: typeof raw.lowConfSampled === 'number' ? raw.lowConfSampled : 0,
+          lowConfCorrect: typeof raw.lowConfCorrect === 'number' ? raw.lowConfCorrect : 0,
+        }
+      }
+    } catch { /* 无文件/损坏：零值起步 */ }
+    this.reviewStats.set(kbId, stats)
+    return stats
+  }
+
+  private saveReviewStats(kbId: string, stats: ReviewStats): void {
+    this.reviewStats.set(kbId, stats)
+    try {
+      mkdirSync(this.kbDir(kbId), { recursive: true })
+      writeFileSync(this.reviewFileOf(kbId), JSON.stringify({ version: 1, ...stats }, null, 2))
+    } catch { /* 写失败保留内存态 */ }
   }
 
   // ── 后台索引与进度（0207 §3.2 面板数据源）─────────────────────────────
@@ -452,18 +547,18 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return report
   }
 
-  async query(target: KbRef | undefined, q: QueryInput): Promise<EvidencePack> {
-    const kb = this.resolveKb(target)
+  async query(target: KbRef | undefined, q: QueryInput, cwd?: string): Promise<EvidencePack> {
+    const kb = this.resolveKb(target, cwd)
     const store = this.storeOf(kb)
     if (store.counts().sources === 0) {
       throw new GraphRagError('NOT_INDEXED', `知识库「${kb.name}」尚未建立图谱；先调用 graphrag_index（需审批）`)
     }
-    if (q.mode === 'global') return searchGlobal(store, q.question, { maxTokens: q.maxTokens })
+    if (q.mode === 'global') return searchGlobal(store, q.question, { maxTokens: q.maxTokens, scorer: this.globalScorer() })
     return searchLocal(store, q.question, { maxTokens: q.maxTokens, chunkLimit: q.topK })
   }
 
-  async traverse(target: KbRef | undefined, t: TraverseInput): Promise<Subgraph> {
-    const kb = this.resolveKb(target)
+  async traverse(target: KbRef | undefined, t: TraverseInput, cwd?: string): Promise<Subgraph> {
+    const kb = this.resolveKb(target, cwd)
     const store = this.storeOf(kb)
     if (store.counts().sources === 0) {
       throw new GraphRagError('NOT_INDEXED', `知识库「${kb.name}」尚未建立图谱；先调用 graphrag_index（需审批）`)
@@ -471,8 +566,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return searchTraversal(store, t.seed, t)
   }
 
-  async forget(target: KbRef, inner: ForgetTarget): Promise<ForgetReport> {
-    return this.storeOf(this.resolveKb(target)).forget(inner)
+  async forget(target: KbRef | undefined, inner: ForgetTarget, cwd?: string): Promise<ForgetReport> {
+    return this.storeOf(this.resolveKb(target, cwd)).forget(inner)
   }
 
   // ── 浏览与审查面（0207 §3.3/§3.4）────────────────────────────────────
@@ -774,9 +869,10 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     }
   }
 
-  /** 审查判定：correct/wrong 计入抽样统计；wrong 进排除清单（置信度置 -1）。
-   * correction 非空且有实际变化时改写关系端点/类型（人工确认置信度置 1、
-   * 清除排除态），计入 corrected 统计，且不再排除。 */
+  /** 审查判定：correct/wrong 计入抽样统计（低置信 <0.8 区间单列）；
+   * wrong 进排除清单（置信度置 -1，检索面过滤）。correction 非空且有实际
+   * 变化时改写关系端点/类型（人工确认置信度置 1、清除排除态），计入
+   * corrected 统计，且不再排除。统计持久化 review.json（0207 §4.2）。 */
   reviewRelation(
     target: KbRef,
     relationId: number,
@@ -784,7 +880,9 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     correction?: { readonly s?: string; readonly r?: string; readonly o?: string },
   ): { readonly excluded: boolean; readonly corrected: boolean } {
     const kb = this.resolveKb(target)
-    const stats = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0, corrected: 0 }
+    const store = this.storeOf(kb)
+    const rel = store.relationById(relationId)
+    const lowConf = rel !== null && rel.confidence > 0 && rel.confidence < 0.8
     let corrected = false
     if (correction !== undefined) {
       const next: { srcName?: string; type?: string; dstName?: string } = {}
@@ -792,23 +890,26 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       if (correction.r !== undefined && correction.r.trim() !== '') next.type = correction.r.trim()
       if (correction.o !== undefined && correction.o.trim() !== '') next.dstName = correction.o.trim()
       if (Object.keys(next).length > 0) {
-        const res = this.storeOf(kb).updateRelationEnds(relationId, next)
+        const res = store.updateRelationEnds(relationId, next)
         corrected = res.changed
         if (corrected) {
           this.reviewExclude.get(kb.id)?.delete(relationId)
-          stats.sampled += 1
-          stats.corrected += 1
-          this.reviewStats.set(kb.id, stats)
+          const s = this.reviewStatsOf(kb.id)
+          this.saveReviewStats(kb.id, { ...s, sampled: s.sampled + 1, corrected: s.corrected + 1 })
           return { excluded: false, corrected: true }
         }
       }
     }
     if (verdict === 'unsure') return { excluded: false, corrected: false }
-    stats.sampled += 1
-    if (verdict === 'correct') stats.correct += 1
-    this.reviewStats.set(kb.id, stats)
+    const s = this.reviewStatsOf(kb.id)
+    this.saveReviewStats(kb.id, {
+      ...s,
+      sampled: s.sampled + 1,
+      correct: s.correct + (verdict === 'correct' ? 1 : 0),
+      lowConfSampled: s.lowConfSampled + (lowConf ? 1 : 0),
+      lowConfCorrect: s.lowConfCorrect + (lowConf && verdict === 'correct' ? 1 : 0),
+    })
     if (verdict !== 'wrong') return { excluded: false, corrected: false }
-    const store = this.storeOf(kb)
     const set = this.reviewExclude.get(kb.id) ?? new Set<number>()
     set.add(relationId)
     this.reviewExclude.set(kb.id, set)
@@ -816,7 +917,8 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     return { excluded: true, corrected: false }
   }
 
-  /** 体检报告（0207 §3.4 结论卡）。 */
+  /** 体检报告（0207 §3.4 结论卡）：覆盖/隔离率/抽样精确率（总 + 低置信
+   * 区间单列）/排除数/roots 外逃逸检查/最后索引时间。 */
   healthReport(target: KbRef): HealthReport {
     const kb = this.resolveKb(target)
     const store = this.storeOf(kb)
@@ -824,9 +926,16 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     const indexed = sources.filter(s => s.state === 'merged').length
     const stale = sources.filter(s => s.state !== 'merged' && s.state !== 'deleted').length
     const quarantined = sources.filter(s => s.state === 'quarantined').length
-    const review = this.reviewStats.get(kb.id) ?? { sampled: 0, correct: 0, corrected: 0 }
+    const review = this.reviewStatsOf(kb.id)
     const excluded = this.reviewExclude.get(kb.id)
     const excludedCount = excluded !== undefined && excluded.size > 0 ? excluded.size : store.excludedRelationCount()
+    // roots 外逃逸检查：absPath 不再落在任何生效授权根内的来源数
+    const rootsReal: string[] = []
+    for (const r of this.effectiveRoots(kb)) {
+      try { rootsReal.push(realpathSync(r)) } catch { rootsReal.push(r) }
+    }
+    const escaped = sources.filter(s =>
+      s.state !== 'deleted' && !rootsReal.some(r => s.absPath === r || s.absPath.startsWith(`${r}/`))).length
     const scannedTotal = indexed + stale
     return {
       kbName: kb.name,
@@ -837,7 +946,11 @@ export class LocalGraphRagProvider implements GraphRagProvider {
       correct: review.correct,
       corrected: review.corrected,
       samplePrecision: review.sampled === 0 ? null : review.correct / review.sampled,
+      lowConfSampled: review.lowConfSampled,
+      lowConfCorrect: review.lowConfCorrect,
+      lowConfPrecision: review.lowConfSampled === 0 ? null : review.lowConfCorrect / review.lowConfSampled,
       excludedRelations: excludedCount,
+      escapedSources: escaped,
       lastIndexAt: kb.lastIndexedAt,
     }
   }

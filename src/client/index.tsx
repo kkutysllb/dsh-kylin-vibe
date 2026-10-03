@@ -80,32 +80,34 @@ export function apply(ctx: ClientContext): void {
         return ctx.connection.rpc.call(channel, endpoint, payload)
       },
     },
-  })
-  const bridge = createHostBridge({
-    sessions: ctx.sessions,
-    uiWorkspace: ctx.uiWorkspace,
-    workspaces: ctx.workspaces,
-    remote: ctx.remote,
-    modelDirectories: ctx.modelDirectories,
-    layout: ctx.layout,
+    bridge: createHostBridge({
+      sessions: ctx.sessions,
+      uiWorkspace: ctx.uiWorkspace,
+      workspaces: ctx.workspaces,
+      remote: ctx.remote,
+      modelDirectories: ctx.modelDirectories,
+      layout: ctx.layout,
+    }),
+    t,
   })
 
-  if (ctx.slots?.inject !== undefined) {
+  const slots = ctx.slots
+  if (slots?.inject !== undefined) {
     try {
-      ctx.slots.inject('sidebar.panellist', () => {
-        const disposeIcon = ctx.slots.register({
+      slots.inject('sidebar.panellist', () => {
+        const disposeIcon = slots.register({
           name: 'sidebar.panellist',
           id: PANEL_ID,
           order: 125,
           label: () => t('nav'),
           locale: NS,
         }, PanelIcon)
-        const disposePanel = ctx.slots.register({
+        const disposePanel = slots.register({
           name: 'main',
           key: PANEL_ID,
           locale: NS,
         }, function KbManagerMount(): React.ReactElement {
-          return <KbManagerView runtime={runtime} t={t} bridge={bridge} />
+          return <KbManagerView runtime={runtime} t={t} bridge={runtime.bridge} />
         })
         return () => { disposePanel(); disposeIcon() }
       })

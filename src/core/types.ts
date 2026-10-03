@@ -212,6 +212,9 @@ export interface QueryMeta {
   readonly seedHits: number
   readonly pprIterations: number | null
   readonly llmCalls: number
+  /** global LLM 打分的成本（0203 §2.2 第 4 步；词法路径为 0/缺省）。 */
+  readonly tokensIn?: number
+  readonly tokensOut?: number
   readonly coverage: string
 }
 
@@ -375,6 +378,7 @@ export const ERROR_CODES = [
   'MISSING_CREDENTIAL',
   'ABORTED',
   'LLM_TIMEOUT',
+  'CONTEXT_WINDOW',
   'SCHEMA_FUTURE',
 ] as const
 export type ErrorCode = (typeof ERROR_CODES)[number]

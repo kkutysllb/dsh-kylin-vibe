@@ -3,7 +3,7 @@
  * dts 不生成（消费者是宿主运行时；类型面由 src/types/dsh.d.ts 服务）。
  */
 import { build } from 'esbuild'
-import { cpSync, mkdirSync, rmSync } from 'node:fs'
+import { copyFileSync, cpSync, mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -34,6 +34,13 @@ const entries = [
 for (const entry of entries) {
   await build({ ...common, entryPoints: [entry.in], outfile: `${entry.out}.js` })
   console.log(`built ${entry.out}.js`)
+}
+
+// 薄类型产物（0205 §4「或手写薄 d.ts」）：手写面随构建拷贝进 lib/
+for (const dts of readdirSync(join(root, 'src', 'dts'))) {
+  if (!dts.endsWith('.d.ts')) continue
+  copyFileSync(join(root, 'src', 'dts', dts), join(outdir, dts))
+  console.log(`copied ${dts}`)
 }
 
 // 补充产物：cordis.patch.yml 已在 files 列表；无需复制

@@ -34,6 +34,8 @@ describe('GraphRagServiceImpl', () => {
     forget: async () => ({}) as ForgetReport,
     estimate: () => ({ files: 0, estCalls: 0 }),
     browseEntities: () => [],
+    communityList: () => [],
+    evidenceText: () => null,
     sampleForReview: () => [],
     correctFromSelection: async () => ({ triples: [] }),
     listKnowledge: () => [],
@@ -47,7 +49,7 @@ describe('GraphRagServiceImpl', () => {
     expandNode: () => ({ node: null, neighbors: [], edges: [] }),
     graphAll: () => ({ nodes: [], edges: [] }),
     reviewRelation: () => ({ excluded: false, corrected: false }),
-    healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, excludedRelations: 0, lastIndexAt: null }),
+    healthReport: () => ({ kbName: '', files: { indexed: 0, stale: 0, quarantined: 0 }, coverage: null, quarantineRate: null, sampled: 0, correct: 0, corrected: 0, samplePrecision: null, lowConfSampled: 0, lowConfCorrect: 0, lowConfPrecision: null, excludedRelations: 0, escapedSources: 0, lastIndexAt: null }),
   })
 
   test('单 provider 自动选中；注销函数生效', () => {
@@ -494,5 +496,46 @@ describe('LocalGraphRagProvider v2（多知识库）', () => {
     } finally {
       p.dispose()
     }
+  })
+})
+
+describe('审计修复：cwd 默认解析 + global LLM 打分器', () => {
+
+  test('resolveKb 默认链：cwd 命中唯一库优先于 KB_AMBIGUOUS（0207 §2.2①）', () => {
+    const d = mkdtempSync(join(tmpdir(), 'graphrag-cwd-'))
+    try {
+      mkdirSync(join(d, 'repoA'), { recursive: true })
+      mkdirSync(join(d, 'repoB'), { recursive: true })
+      const p = new LocalGraphRagProvider(clampConfig({ dataDir: join(d, 'state') }), { ctx: null, llm: oracleLlm })
+      const a = p.createKb({ name: '库A', roots: [join(d, 'repoA')] })
+      p.createKb({ name: '库B', roots: [join(d, 'repoB')] })
+      // cwd 落在库A roots 内 → 自动选中库A（多库也不抛 KB_AMBIGUOUS）
+      assert.equal(p.resolveKb(undefined, join(d, 'repoA')).id, a.id)
+      // query/traverse/forget 契约面透传 cwd（签名第三参）
+      assert.equal(typeof p.query, 'function')
+      // cwd 不命中任何库且多库 → 候选名单
+      assert.throws(() => p.resolveKb(undefined, join(d)), (e: unknown) => e instanceof GraphRagError && e.code === 'KB_AMBIGUOUS')
+    } finally { rmSync(d, { recursive: true, force: true }) }
+  })
+
+  test('llmGlobalScorer：分批打分、坏批词法兜底、成本回传', async () => {
+    const { llmGlobalScorer } = await import('../src/provider.ts')
+    let calls = 0
+    const llm: LlmCompleter = {
+      complete: async (_sys, user) => {
+        calls++
+        if (user.includes('坏批')) return '不是 JSON'
+        const n = (user.match(/^\[\d+\]/gm) ?? []).length
+        return JSON.stringify({ scores: Array.from({ length: n }, (_, i) => (i === 0 ? 9 : 1)) })
+      },
+    }
+    const scorer = llmGlobalScorer(llm, 2)
+    const summaries = ['社区一 订单 编排', '社区二 库存 扣减', '社区三 坏批 内容', '社区四 通知 投递']
+    assert.ok(scorer.scoreAll !== undefined)
+    const out = await scorer.scoreAll('订单 编排 问题', summaries)
+    assert.equal(calls, 2) // 4 条摘要按批 2 → 2 次调用
+    assert.equal(out.llmCalls, 2)
+    assert.ok(out.scores[0] === 9)
+    assert.ok(typeof out.scores[2] === 'number' && out.scores[2]! >= 0) // 坏批回落词法分
   })
 })

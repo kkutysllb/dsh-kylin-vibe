@@ -1,9 +1,12 @@
 /** 面板运行时：快照状态源（useSyncExternalStore）+ 动作 + 进度轮询。
  *
  * 轮询节奏：存在 running/done 未读进度时 1.2s，否则 5s——面板轻量自刷新。
+ * bridge（宿主桥：目录选择/agent 代建）与 t（词典）随运行时下发，
+ * ManageTab 等深层组件经 runtime.bridge 取用（不再依赖未接线的全局）。
  */
 
-import { unwrap, type ClientRpc, type CreateKbInput, type KbView, type Snapshot, type UpdateKbInput } from './protocol.ts'
+import type { HostBridge } from './bridge.ts'
+import { unwrap, type ClientRpc, type CreateKbInput, type EstimateView, type KbView, type Snapshot, type UpdateKbInput } from './protocol.ts'
 
 export const RPC_CHANNEL = '/dsh-kylin-vibe'
 
@@ -22,6 +25,8 @@ export interface Translate {
 
 export interface KbRuntime {
   readonly rpc: ClientRpc
+  readonly bridge: HostBridge
+  readonly t: Translate
   readonly source: {
     getSnapshot(): PanelState
     subscribe(listener: () => void): () => void
@@ -40,13 +45,20 @@ export interface KbRuntime {
   remove(id: string): Promise<void>
   startIndex(id: string, retryQuarantined?: boolean): Promise<void>
   cancel(id: string): Promise<void>
+  /** KB 级图谱遗忘（销毁性，调用方负责二次确认）。 */
+  forgetGraph(id: string): Promise<void>
+  /** dry-run 成本估算（索引前预估卡，0207 §3.1）。 */
+  estimate(id: string): Promise<EstimateView>
 }
 
 export interface KbRuntimeDeps {
   readonly rpc: ClientRpc
+  readonly bridge: HostBridge
+  readonly t: Translate
 }
 
 export function createKbRuntime(deps: KbRuntimeDeps): KbRuntime {
+  const { rpc, bridge, t } = deps
   let state: PanelState = { phase: 'idle' }
   const listeners = new Set<() => void>()
   const publish = (next: PanelState): void => {
@@ -69,7 +81,7 @@ export function createKbRuntime(deps: KbRuntimeDeps): KbRuntime {
   }
 
   const call = async <T>(endpoint: string, payload?: unknown): Promise<T> =>
-    unwrap<T>(deps.rpc.call(RPC_CHANNEL, endpoint, payload))
+    unwrap<T>(rpc.call(RPC_CHANNEL, endpoint, payload))
 
   let pollTimer: ReturnType<typeof setInterval> | undefined
 
@@ -108,7 +120,9 @@ export function createKbRuntime(deps: KbRuntimeDeps): KbRuntime {
   }
 
   const runtime: KbRuntime = {
-    rpc: deps.rpc,
+    rpc,
+    bridge,
+    t,
     source,
     notice: {
       getSnapshot: (): string | undefined => noticeText,
@@ -127,13 +141,16 @@ export function createKbRuntime(deps: KbRuntimeDeps): KbRuntime {
     stop: (): void => {
       if (pollTimer !== undefined) { clearInterval(pollTimer); pollTimer = undefined }
     },
-    create: (input: CreateKbInput) => withRefresh(() => call('createKb', input), `知识库「${input.name}」已创建`, '创建失败'),
-    update: (input: UpdateKbInput) => withRefresh(() => call('updateKb', input), '知识库已更新', '更新失败'),
-    remove: (id: string) => withRefresh(() => call('deleteKb', { id }), '知识库已删除', '删除失败'),
+    create: (input: CreateKbInput) => withRefresh(() => call('createKb', input), t('noticeKbCreated', { name: input.name }), t('noticeKbCreateFailed')),
+    update: (input: UpdateKbInput) => withRefresh(() => call('updateKb', input), t('noticeKbUpdated'), t('noticeKbUpdateFailed')),
+    remove: (id: string) => withRefresh(() => call('deleteKb', { id }), t('noticeKbDeleted'), t('noticeKbDeleteFailed')),
     startIndex: (id: string, retryQuarantined = false) => withRefresh(
       () => call('index', { id, retryQuarantined }),
-      '索引已启动', '索引启动失败'),
-    cancel: (id: string) => withRefresh(() => call('cancel', { id }), '已请求取消', '取消失败'),
+      retryQuarantined ? t('noticeReplayStarted') : t('noticeIndexStarted'),
+      t('noticeIndexStartFailed')),
+    cancel: (id: string) => withRefresh(() => call('cancel', { id }), t('noticeCancelled'), t('noticeCancelFailed')),
+    forgetGraph: (id: string) => withRefresh(() => call('forgetGraph', { id }), t('noticeGraphForgotten'), t('noticeGraphForgetFailed')),
+    estimate: (id: string) => call<EstimateView>('estimate', { id }),
   }
   return runtime
 }

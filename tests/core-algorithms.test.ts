@@ -142,17 +142,17 @@ describe('searchLocal', () => {
 
 describe('searchGlobal', () => {
 
-  test('社区摘要排序 + 代表实体 + chunk 引用', () => {
-    const pack = searchGlobal(store, '订单库存通知的协作体系')
+  test('社区摘要排序 + 代表实体 + chunk 引用', async () => {
+    const pack = await searchGlobal(store, '订单库存通知的协作体系')
     assert.equal(pack.mode, 'global')
     assert.ok(pack.communities.length >= 1)
     assert.ok(pack.communities.some(c => c.note.includes('LLM 生成摘要')))
     assert.ok(pack.entities.length >= 1)
   })
 
-  test('无摘要时 NOT_INDEXED', () => {
+  test('无摘要时 NOT_INDEXED', async () => {
     const fresh = new SqliteGraphStore(':memory:')
-    assert.throws(() => searchGlobal(fresh, 'x'), (e: unknown) => e instanceof GraphRagError && e.code === 'NOT_INDEXED')
+    await assert.rejects(searchGlobal(fresh, 'x'), (e: unknown) => e instanceof GraphRagError && e.code === 'NOT_INDEXED')
     fresh.close()
   })
 })
@@ -184,5 +184,100 @@ describe('searchTraversal', () => {
 
   test('不存在的 seed → NO_SEED', () => {
     assert.throws(() => searchTraversal(store, '不存在实体xyz'), (e: unknown) => e instanceof GraphRagError && e.code === 'NO_SEED')
+  })
+})
+
+describe('searchGlobal × LLM 打分器（0203 §2.2 map，>8 社区才触发）', () => {
+  test('scoreAll 分批分数决定排序，成本进 QueryMeta', async () => {
+    const s = new SqliteGraphStore(':memory:')
+    try {
+      // 9 个社区各带 1 实体与摘要，第 7 个与问题最相关
+      for (let i = 1; i <= 9; i++) {
+        const src = s.upsertSource({ path: `g${i}.md`, absPath: `/ws/g${i}.md`, contentHash: `h${i}`, sizeBytes: 1, mtimeMs: 1 })
+        s.replaceChunks(src.id, [{ ordinal: 0, startLine: 1, endLine: 2, startCol: 0, endCol: 5, text: `社区${i}的正文`, tokenEst: 5 }])
+        const ch = s.getChunks(src.id)[0]!
+        s.applyExtraction({ sourceId: src.id, chunkId: ch.id,
+          entities: [{ normName: `实体${i}`, name: `实体${i}`, type: 'concept', description: null, confidence: 1 }],
+          relations: [], mentions: [] })
+        const ent = s.getEntity(`实体${i}`)!
+        const cid = s.putCommunity({ level: 0, label: i, fingerprint: `fp-${i}`, memberCount: 1 })
+        s.assignCommunity(ent.id, cid)
+        s.putSummary({ communityId: cid, summary: `社区${i}：关于主题甲的内容`, entitiesTop: [`实体${i}`], fingerprintAt: `fp-${i}` })
+      }
+      let llmCalls = 0
+      const pack = await searchGlobal(s, '主题甲', {
+        scorer: {
+          score: () => 0,
+          scoreAll: async (_q, summaries) => {
+            llmCalls++
+            return { scores: summaries.map(x => (x.includes('社区7') ? 10 : 0)), llmCalls: 1, tokensIn: 100, tokensOut: 20 }
+          },
+        },
+      })
+      assert.equal(llmCalls, 1)
+      assert.equal(pack.communities[0]!.summary.includes('社区7'), true) // LLM 分最高的社区排第一
+      assert.equal(pack.meta.llmCalls, 1)
+      assert.equal(pack.meta.tokensIn, 100)
+      assert.equal(pack.meta.tokensOut, 20)
+    } finally { s.close() }
+  })
+
+  test('≤8 社区不触发 LLM 打分（零成本直进）', async () => {
+    const s = new SqliteGraphStore(':memory:')
+    try {
+      for (let i = 1; i <= 8; i++) {
+        const src = s.upsertSource({ path: `s${i}.md`, absPath: `/ws/s${i}.md`, contentHash: `h${i}`, sizeBytes: 1, mtimeMs: 1 })
+        s.replaceChunks(src.id, [{ ordinal: 0, startLine: 1, endLine: 2, startCol: 0, endCol: 5, text: `正文${i}`, tokenEst: 5 }])
+        const ch = s.getChunks(src.id)[0]!
+        s.applyExtraction({ sourceId: src.id, chunkId: ch.id,
+          entities: [{ normName: `实体${i}`, name: `实体${i}`, type: 'concept', description: null, confidence: 1 }],
+          relations: [], mentions: [] })
+        const ent = s.getEntity(`实体${i}`)!
+        const cid = s.putCommunity({ level: 0, label: i, fingerprint: `fp${i}`, memberCount: 1 })
+        s.assignCommunity(ent.id, cid)
+        s.putSummary({ communityId: cid, summary: `摘要${i}`, entitiesTop: [`实体${i}`], fingerprintAt: `fp${i}` })
+      }
+      let llmCalls = 0
+      const pack = await searchGlobal(s, '摘要', {
+        scorer: { score: () => 0, scoreAll: async () => { llmCalls++; return { scores: [], llmCalls: 1, tokensIn: 0, tokensOut: 0 } } },
+      })
+      assert.equal(llmCalls, 0)
+      assert.equal(pack.communities.length, 8)
+      assert.equal(pack.meta.llmCalls, 0)
+    } finally { s.close() }
+  })
+})
+
+describe('local 种子秩加权 + 凸组合呈现（种子权重精化回归）', () => {
+  test('问题点名实体排噪声枚举实体之前；PPR 桥接实体进前三', () => {
+    const s = new SqliteGraphStore(':memory:')
+    try {
+      // 图：阿尔法—贝塔桥—伽马靶（两跳）；噪声甲仅与伽马靶单端强连（w 大）
+      const mk = (path: string, text: string, ents: string[], rels: [string, string][]) => {
+        const src = s.upsertSource({ path, absPath: `/ws/${path}`, contentHash: `h-${path}`, sizeBytes: 10, mtimeMs: 1 })
+        s.replaceChunks(src.id, [{ ordinal: 0, startLine: 1, endLine: 2, startCol: 0, endCol: 9, text, tokenEst: 9 }])
+        const ch = s.getChunks(src.id)[0]!
+        s.applyExtraction({
+          sourceId: src.id, chunkId: ch.id,
+          entities: ents.map(n => ({ normName: n, name: n, type: 'concept' as const, description: null, confidence: 1 })),
+          relations: rels.map(([a, b]) => ({ srcNorm: a, dstNorm: b, type: 'uses' as const, description: null, confidence: 1 })),
+          mentions: [],
+        })
+      }
+      // 枚举页（rank 1 命中，提及全部实体——噪声源）；两跳证据页提及桥
+      mk('enum.md', '总览：阿尔法 伽马靶 噪声甲 噪声乙 都在此出现', ['阿尔法', '伽马靶', '噪声甲', '噪声乙'], [])
+      mk('hop1.md', '阿尔法经由贝塔桥', ['阿尔法', '贝塔桥'], [['阿尔法', '贝塔桥']])
+      mk('hop2.md', '贝塔桥抵达伽马靶', ['贝塔桥', '伽马靶'], [['贝塔桥', '伽马靶']])
+      mk('noise.md', '伽马靶与噪声甲高频协作', ['伽马靶', '噪声甲'], [['伽马靶', '噪声甲'], ['伽马靶', '噪声甲']])
+      const pack = searchLocal(s, '阿尔法与伽马靶之间通过什么环节关联')
+      const names = pack.entities.map(e => e.name)
+      const rank = (n: string): number => names.indexOf(n) + 1
+      // 问题点名实体（FTS 直击种子）必须排在枚举页噪声实体之前
+      assert.ok(rank('阿尔法') <= 2, `阿尔法位次 ${rank('阿尔法')}`)
+      assert.ok(rank('伽马靶') <= 2, `伽马靶位次 ${rank('伽马靶')}`)
+      assert.ok(rank('噪声甲') > rank('阿尔法') || rank('噪声乙') > rank('阿尔法'))
+      // PPR 桥接实体（连两端）进前三，压过单端噪声
+      assert.ok(rank('贝塔桥') <= 3, `贝塔桥位次 ${rank('贝塔桥')}`)
+    } finally { s.close() }
   })
 })

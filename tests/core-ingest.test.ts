@@ -186,3 +186,36 @@ describe('runIngest 全管线', () => {
     }
   })
 })
+
+describe('CONTEXT_WINDOW 对半细分（0203 §1.5 调用纪律）', () => {
+
+  test('整块超窗 → 行边界对半各抽一次成功；不再隔离', async () => {
+    const d = mkdtempSync(join(tmpdir(), 'graphrag-cw-'))
+    try {
+      mkdirSync(join(d, 'docs'), { recursive: true })
+      writeFileSync(join(d, 'docs', 'big.md'), '甲服务使用乙服务完成编排。\n\n' + '背景说明填充内容。'.repeat(20) + '\n丙服务使用丁服务。\n')
+      const st = new SqliteGraphStore(join(d, 'g.db'))
+      try {
+        let full = 0
+        let halves = 0
+        const llm: LlmCompleter = {
+          complete: async (_sys, user) => {
+            // 整块同时含首尾两段（甲…与丙…）；对半后任一半只含其一
+            if (user.includes('甲服务') && user.includes('丙服务')) {
+              full++
+              throw new GraphRagError('CONTEXT_WINDOW', '文本块超出模型上下文窗口')
+            }
+            halves++
+            return oracleJson(user)
+          },
+        }
+        const report = await runIngest(st, { authorizedRoots: [join(d, 'docs')] }, { llm, summarize })
+        assert.ok(full >= 1, '整块调用触发超窗')
+        assert.ok(halves >= 2, '对半后各半至少各抽一次')
+        assert.equal(report.quarantined, 0)
+        assert.ok(st.listSources().every(s => s.state === 'merged'))
+        assert.ok(st.getEntity('甲服务'))
+      } finally { st.close() }
+    } finally { rmSync(d, { recursive: true, force: true }) }
+  })
+})

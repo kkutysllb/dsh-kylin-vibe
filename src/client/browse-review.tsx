@@ -4,9 +4,9 @@
  * ui-primitives 的 MarkdownText 渲染；缺席宿主回落 <pre> 原文。
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react'
 
-import { unwrap, type EntityCard, type HealthReport, type ReviewSample } from './protocol.ts'
+import { unwrap, type CommunityView, type EntityCard, type EvidenceTextResult, type HealthReport, type KnowledgeSource, type ReviewSample } from './protocol.ts'
 import type { KbRuntime, Translate } from './runtime.ts'
 import { RPC_CHANNEL } from './runtime.ts'
 import { formatTime } from './view.tsx'
@@ -152,6 +152,9 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
   const [query, setQuery] = useState('')
   const [cards, setCards] = useState<readonly EntityCard[]>([])
   const [loading, setLoading] = useState(true)
+  /** 点击邻居边 → 展开源 chunk 原文（0207 §3.3）；null = 收起。 */
+  const [evidenceOf, setEvidenceOf] = useState<{ readonly key: string; readonly result: EvidenceTextResult | null } | null>(null)
+  const [communities, setCommunities] = useState<readonly CommunityView[]>([])
 
   const load = (q: string): void => {
     setLoading(true)
@@ -161,6 +164,20 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
       .finally(() => setLoading(false))
   }
   useEffect(() => { load('') }, [kbId])
+
+  useEffect(() => {
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'communities', { id: kbId, limit: 20 }))
+      .then(v => setCommunities(v as readonly CommunityView[]))
+      .catch(() => setCommunities([]))
+  }, [kbId])
+
+  const openEvidence = (key: string, path: string, lines: string): void => {
+    if (evidenceOf !== null && evidenceOf.key === key) { setEvidenceOf(null); return }
+    setEvidenceOf({ key, result: null })
+    void unwrap(runtime.rpc.call(RPC_CHANNEL, 'evidenceText', { id: kbId, path, lines }))
+      .then(v => setEvidenceOf({ key, result: v as EvidenceTextResult | null }))
+      .catch(() => setEvidenceOf(null))
+  }
 
   // 两列宽度拖拽：右列百分比可调（记忆到 localStorage）
   const [rightPct, setRightPct] = useState<number>(() => {
@@ -220,19 +237,53 @@ function BrowseTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
             {card.neighbors.length > 0 && (
               <table className='gv-table'>
                 <tbody>
-                  {card.neighbors.map((nb, i) => (
-                    <tr key={i}>
-                      <td>{nb.dir === 'out' ? '→' : '←'}</td>
-                      <td>{nb.type}</td>
-                      <td>{nb.other}</td>
-                      <td className='gv-cost'>w={nb.weight}{nb.evidence.length > 0 ? ` · ${nb.evidence[0]?.path}:${nb.evidence[0]?.lines}` : ''}</td>
-                    </tr>
-                  ))}
+                  {card.neighbors.map((nb, i) => {
+                    const key = `${card.id}:${i}`
+                    const ev = nb.evidence[0]
+                    const open = evidenceOf !== null && evidenceOf.key === key
+                    return (
+                      <Fragment key={key}>
+                        <tr style={{ cursor: ev !== undefined ? 'pointer' : 'default' }} onClick={() => { if (ev !== undefined) openEvidence(key, ev.path, ev.lines) }}>
+                          <td>{nb.dir === 'out' ? '→' : '←'}</td>
+                          <td>{nb.type}</td>
+                          <td>{nb.other}</td>
+                          <td className='gv-cost'>w={nb.weight}{ev !== undefined ? ` · ${ev.path}:${ev.lines}` : ''}</td>
+                        </tr>
+                        {open && (
+                          <tr>
+                            <td colSpan={4} style={{ padding: '4px 0' }}>
+                              {evidenceOf?.result === null
+                                ? <span className='gv-cost'>{t('loading')}</span>
+                                : evidenceOf?.result !== null && evidenceOf.result !== undefined
+                                  ? (
+                                    <div className='gv-evidence'>
+                                      <div className='gv-cost'>{evidenceOf.result.path}:{evidenceOf.result.lines}</div>
+                                      <ChunkText text={evidenceOf.result.text} t={t} />
+                                    </div>
+                                  )
+                                  : <span className='gv-cost'>{t('noEvidence')}</span>}
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    )
+                  })}
                 </tbody>
               </table>
             )}
           </div>
         ))}
+        {communities.length > 0 && (
+          <div className='gv-card'>
+            <div className='gv-card-head'><span className='gv-name'>{t('communitiesTitle')}</span></div>
+            {communities.map(c => (
+              <div key={c.id} className='gv-evidence' style={{ marginBottom: 6 }}>
+                <div className='gv-cost'>#{c.id} · {t('communityMembers', { n: c.size })}{c.top.length > 0 ? ` · ${c.top.join('、')}` : ''}</div>
+                {c.summary !== null && c.summary !== '' ? <ChunkText text={c.summary} t={t} /> : <div className='gv-cost'>{t('noSummary')}</div>}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <div
         className='gv-split-divider'
@@ -1128,7 +1179,10 @@ function ReviewTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
     return (
       <div className='gv-empty'>
         {t('reviewExhausted', { done })}
-        <div className='gv-actions'><button className='gv-btn' onClick={load}>{t('resample')}</button></div>
+        <div className='gv-actions'>
+          <button className='gv-btn' onClick={load}>{t('resample')}</button>
+          <button className='gv-btn' onClick={() => { if (window.confirm(t('replayConfirm', { n: 0 }))) void runtime.startIndex(kbId, true) }}>{t('replayShort')}</button>
+        </div>
       </div>
     )
   }
@@ -1376,11 +1430,20 @@ function HealthTab(props: { readonly runtime: KbRuntime; readonly t: Translate; 
           <tr><td>{t('filesIndexed')}</td><td>{report.files.indexed}{report.files.stale > 0 ? `（${t('stale')} ${report.files.stale}）` : ''}</td></tr>
           <tr><td>{t('quarantined')}</td><td>{report.files.quarantined}{report.quarantineRate !== null ? `（${pct(report.quarantineRate)}）` : ''}</td></tr>
           <tr><td>{t('samplePrecision')}</td><td>{report.samplePrecision === null ? t('never') : `${report.correct}/${report.sampled} = ${pct(report.samplePrecision)}`}</td></tr>
+          <tr><td>{t('lowConfPrecision')}</td><td>{report.lowConfPrecision === null ? t('never') : `${report.lowConfCorrect}/${report.lowConfSampled} = ${pct(report.lowConfPrecision)}`}</td></tr>
           <tr><td>{t('healthCorrected')}</td><td>{report.corrected}</td></tr>
           <tr><td>{t('excluded')}</td><td>{report.excludedRelations}</td></tr>
+          <tr><td>{t('escapedSources')}</td><td>{report.escapedSources > 0 ? `${report.escapedSources} ⚠` : '0'}</td></tr>
           <tr><td>{t('lastIndex')}</td><td>{formatAt(report.lastIndexAt)}</td></tr>
         </tbody>
       </table>
+      {report.files.quarantined > 0 && (
+        <div className='gv-actions'>
+          <button className='gv-btn' onClick={() => { if (window.confirm(t('replayConfirm', { n: report.files.quarantined }))) void runtime.startIndex(kbId, true) }}>
+            {t('replayQuarantined', { n: report.files.quarantined })}
+          </button>
+        </div>
+      )}
       <p className='gv-sub'>{t('healthNote')}</p>
     </div>
   )

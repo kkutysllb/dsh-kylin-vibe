@@ -1,0 +1,63 @@
+{
+  "config": "graph-local",
+  "suite": "all",
+  "date": "2026-10-03T16-02-58",
+  "gitSha": "6ec0fc1",
+  "corpus": {
+    "files": 212,
+    "chunks": 212
+  },
+  "graph": {
+    "entities": 168,
+    "relations": 811,
+    "communities": 0
+  },
+  "questions": {
+    "local": 20,
+    "global": 10,
+    "traversal": 15
+  },
+  "localEntityHit": 1,
+  "localRelationRecall": 1,
+  "localMrr5": 0.6771,
+  "multiHopMrr5": 0.5778,
+  "globalCoverage": 0.9,
+  "traversalPrecision": 0.9453,
+  "traversalRecall": 1,
+  "traversalF1": 0.9712,
+  "cost": {
+    "llmCalls": 0,
+    "tokensIn": 0,
+    "tokensOut": 0
+  },
+  "dbBytes": 1150976,
+  "latencyMs": {
+    "p50": 7,
+    "p95": 39.46
+  },
+  "buildMs": 153,
+  "baseline": {
+    "localEntityHit": 1,
+    "localMrr5": 0.975,
+    "multiHopMrr5": 0.9,
+    "globalCoverage": 0.875,
+    "traversalF1": 0.2564
+  },
+  "gates": [
+    {
+      "name": "门槛1：local entityHit@5 与 relationRecall 均非劣于基线（≥ 基线 − 0.02）",
+      "pass": true,
+      "detail": "hit 1.0000 vs 1.0000；relRecall 1.0000 vs 1.0000（MRR 观测：0.6771 vs 0.9750）"
+    },
+    {
+      "name": "门槛2：global coverage ≥ 基线 + 0.05（绝对差）",
+      "pass": false,
+      "detail": "0.9000 vs 基线 0.8750（需 ≥ 0.9250）"
+    },
+    {
+      "name": "门槛3：traversal P ≥ 0.80 且 R ≥ 0.70",
+      "pass": true,
+      "detail": "P 0.9453 / R 1.0000"
+    }
+  ]
+}

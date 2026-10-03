@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
-import { globalCoverage, localScore, traversalPR, type EvalAnswer } from './score.ts'
+import { globalCoverage, localMrr, localScore, traversalPR, type EvalAnswer } from './score.ts'
 
 const a = (parts: Partial<EvalAnswer>): EvalAnswer => ({
   chunks: [],
@@ -73,4 +73,30 @@ test('traversalPR：nodes 优先，缺席时回退 chunk 路径去重', () => {
 test('traversalPR：空集边界（空 golden 记满分召回，空返回记零精确）', () => {
   assert.deepEqual(traversalPR(a({ nodes: [] }), { goldenFiles: [] }), { precision: 0, recall: 1, f1: 0 })
   assert.equal(traversalPR(a({ nodes: [] }), { goldenFiles: ['a'] }).recall, 0)
+})
+
+test('localMrr：图配置按实体层排序取倒数排名，超 k 记 0', () => {
+  const ans = a({ entities: ['订单服务', '库存服务', '支付服务', '通知服务', '用户服务', '库存服务别名无关'], chunks: [{ path: 'x.md', text: 'z' }] })
+  const g = { entities: [['订单服务'], ['支付服务'], ['不在层内的实体']], relations: [] }
+  // 排名 1、3、未命中(∞) → (1 + 1/3 + 0) / 3
+  assert.ok(Math.abs(localMrr(ans, g) - (1 + 1 / 3) / 3) < 1e-9)
+})
+
+test('localMrr：flat 无实体层时回落 chunk 序（首个含别名的块位次）', () => {
+  const ans = a({
+    chunks: [
+      { path: 'a.md', text: '无关' },
+      { path: 'b.md', text: '库存服务 扣减' },
+      { path: 'c.md', text: '订单服务 编排' },
+    ],
+  })
+  const g = { entities: [['库存服务', 'InventoryService'], ['订单服务']], relations: [] }
+  assert.ok(Math.abs(localMrr(ans, g) - (1 / 2 + 1 / 3) / 2) < 1e-9)
+})
+
+test('localMrr：空 golden 记满分；k 截断（第 6 位不贡献）', () => {
+  assert.equal(localMrr(a({ chunks: [] }), { entities: [], relations: [] }), 1)
+  const ans = a({ entities: ['a', 'b', 'c', 'd', 'e', 'f'], chunks: [] })
+  assert.equal(localMrr(ans, { entities: [['f']], relations: [] }), 0)
+  assert.equal(localMrr(ans, { entities: [['e']], relations: [] }), 1 / 5)
 })

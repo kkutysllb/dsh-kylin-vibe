@@ -8,7 +8,7 @@
 
 import { z } from 'zod'
 
-import { ENTITY_TYPES, RELATION_TYPES, normName, type EntityType, type ExtractedItem, type RelationType } from './types.ts'
+import { ENTITY_TYPES, RELATION_TYPES, GraphRagError, normName, type EntityType, type ExtractedItem, type RelationType } from './types.ts'
 
 // ── LLM 抽象 ─────────────────────────────────────────────────────────────────
 
@@ -207,7 +207,15 @@ export interface ExtractChunkOptions {
 
 export type ExtractChunkResult =
   | { readonly ok: true; readonly items: ExtractedItem; readonly dropped: number; readonly llmCalls: number }
-  | { readonly ok: false; readonly errorCode: 'PARSE_FAILED' | 'LLM_ERROR' | 'EMPTY'; readonly detail: string; readonly rawOutput: string | null; readonly llmCalls: number }
+  | { readonly ok: false; readonly errorCode: 'PARSE_FAILED' | 'LLM_ERROR' | 'EMPTY' | 'CONTEXT_WINDOW'; readonly detail: string; readonly rawOutput: string | null; readonly llmCalls: number }
+
+/** completer 抛错 → 三态失败码（CONTEXT_WINDOW 单列，ingest 据此对半细分）。 */
+function toChunkError(err: unknown): { readonly errorCode: 'LLM_ERROR' | 'CONTEXT_WINDOW'; readonly detail: string } {
+  if (err instanceof GraphRagError && err.code === 'CONTEXT_WINDOW') {
+    return { errorCode: 'CONTEXT_WINDOW', detail: err.message }
+  }
+  return { errorCode: 'LLM_ERROR', detail: err instanceof Error ? err.message : String(err) }
+}
 
 export async function extractChunk(
   llm: LlmCompleter,
@@ -225,7 +233,8 @@ export async function extractChunk(
   try {
     raw = await llm.complete(system, user, signal)
   } catch (err) {
-    return { ok: false, errorCode: 'LLM_ERROR', detail: err instanceof Error ? err.message : String(err), rawOutput: null, llmCalls: 0 }
+    const mapped = toChunkError(err)
+    return { ok: false, ...mapped, rawOutput: null, llmCalls: 0 }
   }
   let llmCalls = 1
 

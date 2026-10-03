@@ -79,6 +79,23 @@ function estTokens(s: string): number {
   return Math.ceil(cjk + rest / 3.5)
 }
 
+/** 上下文超限时的对半细分（0203 §1.5）：中点就近的换行处切两半，
+ * 第二半携带字符偏移（mention span 要还原为整块内坐标）。 */
+function halveChunk(text: string): readonly { readonly text: string; readonly offset: number }[] {
+  if (text.length < 2) return [{ text, offset: 0 }]
+  const mid = Math.floor(text.length / 2)
+  const before = text.lastIndexOf('\n', mid)
+  const after = text.indexOf('\n', mid)
+  const cut = before >= 0 && (after < 0 || mid - before <= after - mid)
+    ? before + 1
+    : after >= 0 ? after + 1 : mid
+  if (cut <= 0 || cut >= text.length) return [{ text, offset: 0 }]
+  return [
+    { text: text.slice(0, cut), offset: 0 },
+    { text: text.slice(cut), offset: cut },
+  ]
+}
+
 // ── 主流程 ───────────────────────────────────────────────────────────────────
 
 export async function runIngest(
@@ -185,6 +202,30 @@ export async function runIngest(
         store.applyExtraction(delta)
       } else if (res.errorCode === 'EMPTY') {
         // 合法无内容：跳过不落隔离区
+      } else if (res.errorCode === 'CONTEXT_WINDOW') {
+        // 上下文超限：块对半细分一次重试（0203 §1.5 调用纪律）；
+        // 半块再失败按原语义隔离/记失败，文件继续
+        for (const half of halveChunk(chunkRow.text)) {
+          if (signal?.aborted) return { aborted: true, fileFailed, fileQuarantined, llmCalls, tokensIn, tokensOut, quarantined: q }
+          const sub = await extractChunk(deps.llm, half.text, f.path, cfg.extract, signal)
+          llmCalls += sub.llmCalls
+          tokensIn += estTokens(half.text)
+          tokensOut += estTokens(sub.ok ? '' : sub.rawOutput ?? '')
+          if (sub.ok) {
+            const names = sub.items.entities.map(e => e.n)
+            store.applyExtraction({
+              sourceId: srcId, chunkId: chunkRow.id,
+              entities: sub.items.entities.map(e => ({ normName: normName(e.n), name: e.n, type: e.t, description: e.d, confidence: e.c })),
+              relations: sub.items.relations.map(r => ({ srcNorm: normName(r.s), dstNorm: normName(r.o), type: r.r, description: r.d, confidence: r.c })),
+              mentions: computeMentions(half.text, names).map(m => ({ normName: m.normName, spanStart: m.spanStart + half.offset, spanEnd: m.spanEnd + half.offset })),
+            })
+          } else if (sub.errorCode !== 'EMPTY') {
+            q++
+            fileQuarantined = fileQuarantined || sub.errorCode === 'PARSE_FAILED'
+            fileFailed = fileFailed || sub.errorCode !== 'PARSE_FAILED'
+            store.quarantinePut(chunkRow.id, half.text, sub.rawOutput, sub.errorCode === 'CONTEXT_WINDOW' ? 'LLM_ERROR' : sub.errorCode, `细分重试仍失败：${sub.detail}`)
+          }
+        }
       } else {
         q++
         fileQuarantined = fileQuarantined || res.errorCode === 'PARSE_FAILED'

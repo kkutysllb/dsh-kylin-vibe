@@ -62,6 +62,28 @@ export function localScore(answer: EvalAnswer, golden: LocalGolden): { entityHit
   }
 }
 
+/** local MRR@k（门槛 v2 排序敏感指标，0206 §3.2 v2）：golden 实体组在证据
+ * 排序中的倒数排名均值。图配置用实体层排序（PPR 序）；flat 无实体层，
+ * 排序回落 chunk 序（首个含别名的 chunk 位次）——两配置各用其原生排序。 */
+export function localMrr(answer: EvalAnswer, golden: LocalGolden, k = 5): number {
+  const groups = golden.entities
+  if (groups.length === 0) return 1
+  const useEntityLayer = answer.entities !== undefined && answer.entities.length > 0
+  const rr = groups.map(g => {
+    const aliases = g.map(a => a.trim().toLowerCase()).filter(a => a !== '')
+    let rank = Number.POSITIVE_INFINITY
+    if (useEntityLayer) {
+      const idx = (answer.entities as readonly string[]).findIndex(name => aliases.includes(name.trim().toLowerCase()))
+      if (idx >= 0) rank = idx + 1
+    } else {
+      const idx = answer.chunks.findIndex(c => aliases.some(a => c.text.toLowerCase().includes(a)))
+      if (idx >= 0) rank = idx + 1
+    }
+    return rank <= k ? 1 / rank : 0
+  })
+  return rr.reduce((a, b) => a + b, 0) / rr.length
+}
+
 /** global：关键点覆盖率（chunks + communities 文本）。 */
 export function globalCoverage(answer: EvalAnswer, golden: GlobalGolden): number {
   const hay = haystackOf(answer, true)

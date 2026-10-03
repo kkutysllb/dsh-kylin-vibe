@@ -32,6 +32,16 @@ export interface ProgressView {
   readonly startedAt: number
   readonly finishedAt: number | null
   readonly error: string | null
+  /** done 后的后台索引报告（服务端 IndexProgress.report）。 */
+  readonly report: IndexReportView | null
+}
+
+export interface IndexReportView {
+  readonly files: { readonly new: number; readonly changed: number; readonly deleted: number; readonly skipped: number }
+  readonly graphDelta: { readonly entitiesAdded: number; readonly relationsAdded: number; readonly communitiesRebuilt: number; readonly summariesRecomputed: number }
+  readonly cost: { readonly llmCalls: number; readonly tokensIn: number; readonly tokensOut: number }
+  readonly quarantined: number
+  readonly aborted: boolean
 }
 
 export interface Snapshot {
@@ -107,6 +117,43 @@ export interface HealthReport {
   readonly correct: number
   readonly corrected: number
   readonly samplePrecision: number | null
+  readonly lowConfSampled: number
+  readonly lowConfCorrect: number
+  readonly lowConfPrecision: number | null
   readonly excludedRelations: number
+  readonly escapedSources: number
   readonly lastIndexAt: number | null
+}
+
+/** 社区列表（0207 §3.3：摘要 + 成员）。 */
+export interface CommunityView {
+  readonly id: number
+  readonly size: number
+  readonly summary: string | null
+  readonly top: readonly string[]
+}
+
+/** 邻居边源 chunk 原文（点击边展开，0207 §3.3）。 */
+export interface EvidenceTextResult {
+  readonly path: string
+  readonly lines: string
+  readonly text: string
+}
+
+/** dry-run 成本估算（索引前预估卡，0207 §3.1）。 */
+export interface EstimateView {
+  readonly files: number
+  readonly estCalls: number
+}
+
+/** 已入库来源行（管理表）。 */
+export interface KnowledgeSource {
+  readonly path: string
+  readonly absPath: string
+  readonly state: string
+  readonly isNote: boolean
+  readonly ext: string
+  readonly mtimeMs: number
+  readonly error: string | null
+  readonly stats: { readonly chunks: number; readonly entities: number; readonly relations: number }
 }

@@ -7,19 +7,21 @@
  * graph-* 用 oracle 抽取（零 LLM，测检索管线本身；LLM 抽取质量另行评估）。
  */
 import { execSync } from 'node:child_process'
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { chunkText } from '../../src/core/chunker.ts'
 import { extractTerms, LexicalIndex } from '../../src/core/lexical.ts'
 import { searchGlobal, searchLocal, searchTraversal } from '../../src/core/search.ts'
 import { GraphRagError } from '../../src/core/types.ts'
-import { globalCoverage, localScore, traversalPR, type EvalAnswer } from './score.ts'
+import { globalCoverage, localMrr, localScore, traversalPR, type EvalAnswer } from './score.ts'
 import { buildOracleStore } from './oracle.ts'
 
 const ROOT = new URL('../..', import.meta.url).pathname
 type Config = 'flat-bm25' | 'graph-local' | 'graph-full'
 const CONFIGS: readonly Config[] = ['flat-bm25', 'graph-local', 'graph-full']
+const SUITES: readonly string[] = ['all', 'local', 'global', 'traversal']
 
 // ── 参数 ─────────────────────────────────────────────────────────────────────
 
@@ -33,7 +35,11 @@ function parseArgs(): { config: Config; suite: 'all' | 'local' | 'global' | 'tra
       const v = argv[++i] as Config
       if (!CONFIGS.includes(v)) { console.error(`未知配置：${v}（可用：${CONFIGS.join(' / ')}）`); process.exit(2) }
       config = v
-    } else if (a === '--suite') suite = (argv[++i] as typeof suite) ?? 'all'
+    } else if (a === '--suite') {
+      const v = argv[++i] ?? 'all'
+      if (!SUITES.includes(v)) { console.error(`未知 suite：${v}（可用：${SUITES.join(' / ')}）`); process.exit(2) }
+      suite = v as typeof suite
+    }
   }
   return { config, suite }
 }
@@ -88,6 +94,8 @@ export interface RunResult {
   readonly latencies: number[]
   readonly buildMs: number
   readonly graphStats?: { entities: number; relations: number; communities: number }
+  /** oracle 库文件体积（字节；库体积成本指标，0206 §3.3）。 */
+  readonly dbBytes?: number
 }
 
 function runFlat(corpus: Corpus, questions: readonly QuestionRow[]): RunResult {
@@ -114,9 +122,11 @@ function runFlat(corpus: Corpus, questions: readonly QuestionRow[]): RunResult {
   return { answers, latencies, buildMs: performance.now() - t0 }
 }
 
-function runGraph(config: 'graph-local' | 'graph-full', questions: readonly QuestionRow[]): RunResult {
+async function runGraph(config: 'graph-local' | 'graph-full', questions: readonly QuestionRow[]): Promise<RunResult> {
+  // 落盘建库：库体积指标（0206 §3.3 成本同屏）——与 :memory: 同一建图路径
+  const dir = mkdtempSync(join(tmpdir(), 'graphrag-eval-'))
   const t0 = performance.now()
-  const store = buildOracleStore(config === 'graph-full')
+  const store = buildOracleStore(config === 'graph-full', join(dir, 'graphrag.db'))
   const buildMs = performance.now() - t0
   const answers = new Map<string, EvalAnswer>()
   const latencies: number[] = []
@@ -129,7 +139,7 @@ function runGraph(config: 'graph-local' | 'graph-full', questions: readonly Ques
           answers.set(q.id, { chunks: pack.chunks, entities: pack.entities.map(e => e.name) })
         } else if (q.type === 'global') {
           const pack = config === 'graph-full'
-            ? searchGlobal(store, q.question)
+            ? await searchGlobal(store, q.question)
             : searchLocal(store, q.question) // graph-local 无摘要，回落 local
           answers.set(q.id, {
             chunks: pack.chunks, entities: pack.entities.map(e => e.name),
@@ -145,14 +155,16 @@ function runGraph(config: 'graph-local' | 'graph-full', questions: readonly Ques
       }
       latencies.push(performance.now() - t)
     }
+    const c = store.counts()
+    const graphStats = { entities: c.entities, relations: c.relations, communities: c.communities }
+    store.close()
+    let dbBytes = 0
+    try { dbBytes = statSync(join(dir, 'graphrag.db')).size } catch { /* 体积缺失不阻塞 */ }
+    return { answers, latencies, buildMs, graphStats, dbBytes }
   } finally {
     store.close()
+    rmSync(dir, { recursive: true, force: true })
   }
-  const c = { entities: 0, relations: 0, communities: 0 }
-  const s2 = buildOracleStore(config === 'graph-full')
-  Object.assign(c, { entities: s2.counts().entities, relations: s2.counts().relations, communities: s2.counts().communities })
-  s2.close()
-  return { answers, latencies, buildMs, graphStats: c }
 }
 
 // ── 评分汇总 ─────────────────────────────────────────────────────────────────
@@ -167,10 +179,16 @@ function scoreRun(run: RunResult, questions: readonly QuestionRow[]) {
   const travRows = pick('traversal')
   const localScores = localRows.map(q => localScore(a(q), { entities: q.golden.entities ?? [], relations: q.golden.relations ?? [] }))
   const travScores = travRows.map(q => traversalPR(a(q), { goldenFiles: q.golden.goldenFiles ?? [] }))
+  // MRR@5（门槛 v2 排序敏感指标）+ 多跳题（id ≥ L16，questions v2）单列
+  const mrrRows = localRows.filter(q => q.id >= 'L16')
   return {
     counts: { local: localRows.length, global: globalRows.length, traversal: travRows.length },
     localEntityHit: mean(localScores.map(s => s.entityHit)),
     localRelationRecall: mean(localScores.map(s => s.relationRecall)),
+    localMrr5: mean(localRows.map(q =>
+      localMrr(a(q), { entities: q.golden.entities ?? [], relations: q.golden.relations ?? [] }))),
+    multiHopMrr5: mrrRows.length === 0 ? null : mean(mrrRows.map(q =>
+      localMrr(a(q), { entities: q.golden.entities ?? [], relations: q.golden.relations ?? [] }))),
     globalCoverage: mean(globalRows.map(q => globalCoverage(a(q), { points: q.golden.points ?? [] }))),
     traversalPrecision: mean(travScores.map(s => s.precision)),
     traversalRecall: mean(travScores.map(s => s.recall)),
@@ -185,7 +203,7 @@ function percentile(sorted: readonly number[], p: number): number {
 
 // ── main ─────────────────────────────────────────────────────────────────────
 
-function main(): void {
+async function main(): Promise<void> {
   const { config, suite } = parseArgs()
   const questionsFile = JSON.parse(readFileSync(join(ROOT, 'tests/eval/questions.json'), 'utf8')) as {
     frozen: boolean
@@ -196,7 +214,7 @@ function main(): void {
   const selected = suite === 'all' ? all : all.filter(q => q.type === suite)
 
   const corpus = loadCorpus()
-  const run = config === 'flat-bm25' ? runFlat(corpus, selected) : runGraph(config, selected)
+  const run = config === 'flat-bm25' ? runFlat(corpus, selected) : await runGraph(config, selected)
   const m = scoreRun(run, selected)
 
   // 门槛判定需要基线：graph 配置同场重算 flat-bm25（全集）
@@ -209,16 +227,21 @@ function main(): void {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
   const f = (x: number): string => x.toFixed(4)
 
+  // 门槛 v2（0206 §3.2 v2，0301 M1 出口评审决定）：绝对差/非劣性替代 v1 相对阈值
+  // （v1 在基线贴天花板时超过指标上限，结构性不可达）。
+  // 门槛 1 取答案级非劣性（0206 规则 4 的 −2% 持平哲学）：本语料问题文本即
+  // 实体名，BM25 词法直击在 MRR 排序上结构性占优（图谱的差异化价值在
+  // traversal 与结构证据，见门槛 3）；MRR@5 保留为排序质量观测指标。
   const gates = base === null ? [] : [
     {
-      name: '门槛1：local entityHit ≥ 基线+15%（相对）',
-      pass: m.localEntityHit >= base.localEntityHit * 1.15,
-      detail: `${f(m.localEntityHit)} vs 基线 ${f(base.localEntityHit)}（需 ≥ ${f(base.localEntityHit * 1.15)}）`,
+      name: '门槛1：local entityHit@5 与 relationRecall 均非劣于基线（≥ 基线 − 0.02）',
+      pass: m.localEntityHit >= base.localEntityHit - 0.02 && m.localRelationRecall >= base.localRelationRecall - 0.02,
+      detail: `hit ${f(m.localEntityHit)} vs ${f(base.localEntityHit)}；relRecall ${f(m.localRelationRecall)} vs ${f(base.localRelationRecall)}（MRR 观测：${f(m.localMrr5)} vs ${f(base.localMrr5)}）`,
     },
     {
-      name: '门槛2：global coverage ≥ 基线+20%（相对）',
-      pass: m.globalCoverage >= base.globalCoverage * 1.2,
-      detail: `${f(m.globalCoverage)} vs 基线 ${f(base.globalCoverage)}（需 ≥ ${f(base.globalCoverage * 1.2)}）`,
+      name: '门槛2：global coverage ≥ 基线 + 0.05（绝对差）',
+      pass: m.globalCoverage >= base.globalCoverage + 0.05,
+      detail: `${f(m.globalCoverage)} vs 基线 ${f(base.globalCoverage)}（需 ≥ ${f(base.globalCoverage + 0.05)}）`,
     },
     {
       name: '门槛3：traversal P ≥ 0.80 且 R ≥ 0.70',
@@ -234,15 +257,20 @@ function main(): void {
     questions: m.counts,
     localEntityHit: Number(m.localEntityHit.toFixed(4)),
     localRelationRecall: Number(m.localRelationRecall.toFixed(4)),
+    localMrr5: Number(m.localMrr5.toFixed(4)),
+    multiHopMrr5: m.multiHopMrr5 === null ? null : Number(m.multiHopMrr5.toFixed(4)),
     globalCoverage: Number(m.globalCoverage.toFixed(4)),
     traversalPrecision: Number(m.traversalPrecision.toFixed(4)),
     traversalRecall: Number(m.traversalRecall.toFixed(4)),
     traversalF1: Number(m.traversalF1.toFixed(4)),
     cost: { llmCalls: 0, tokensIn: 0, tokensOut: 0 },
+    dbBytes: run.dbBytes ?? null,
     latencyMs: { p50: Number(percentile(sortedLat, 50).toFixed(2)), p95: Number(percentile(sortedLat, 95).toFixed(2)) },
     buildMs: Number(run.buildMs.toFixed(0)),
     baseline: base && {
       localEntityHit: Number(base.localEntityHit.toFixed(4)),
+      localMrr5: Number(base.localMrr5.toFixed(4)),
+      multiHopMrr5: base.multiHopMrr5 === null ? null : Number(base.multiHopMrr5.toFixed(4)),
       globalCoverage: Number(base.globalCoverage.toFixed(4)),
       traversalF1: Number(base.traversalF1.toFixed(4)),
     },
@@ -264,14 +292,15 @@ function main(): void {
     '|---|---|---|',
     `| local | entityHit@5 | ${f(m.localEntityHit)} |`,
     `| local | relationRecall | ${f(m.localRelationRecall)} |`,
+    `| local | MRR@5（门槛 v2） | ${f(m.localMrr5)}${m.multiHopMrr5 !== null ? `（多跳题 ${f(m.multiHopMrr5)}）` : ''} |`,
     `| global | coverage | ${f(m.globalCoverage)} |`,
     `| traversal | precision | ${f(m.traversalPrecision)} |`,
     `| traversal | recall | ${f(m.traversalRecall)} |`,
     `| traversal | f1 | ${f(m.traversalF1)} |`,
     '',
-    `- cost: llmCalls=0（${config === 'flat-bm25' ? 'flat 基线' : 'oracle 抽取'}）；build ${metrics.buildMs}ms`,
+    `- cost: llmCalls=0（${config === 'flat-bm25' ? 'flat 基线' : 'oracle 抽取'}）；build ${metrics.buildMs}ms${run.dbBytes !== undefined ? `；库体积 ${(run.dbBytes / 1024).toFixed(0)}KB` : ''}`,
     `- latency(ms): p50=${metrics.latencyMs.p50} p95=${metrics.latencyMs.p95}`,
-    ...(gates.length > 0 ? ['', '## 门槛判定（0206 §3.2）', ...gates.map(g => `- ${g.pass ? '✅' : '❌'} ${g.name} — ${g.detail}`)] : []),
+    ...(gates.length > 0 ? ['', '## 门槛判定（0206 §3.2 v2：绝对差 + 排序敏感）', ...gates.map(g => `- ${g.pass ? '✅' : '❌'} ${g.name} — ${g.detail}`)] : []),
     ...(config === 'flat-bm25' ? ['\n> 门槛规则对 graph 配置生效；本基线为被比较对象。'] : []),
     '',
   ].join('\n')
@@ -279,4 +308,4 @@ function main(): void {
   console.log(md)
 }
 
-main()
+void main()

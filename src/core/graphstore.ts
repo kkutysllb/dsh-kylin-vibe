@@ -10,6 +10,7 @@
  */
 
 import { DatabaseSync } from 'node:sqlite'
+import { chmodSync } from 'node:fs'
 
 import type {
   ChunkRef, Community, CommunitySummary, Entity, EntityType, ForgetReport,
@@ -236,6 +237,8 @@ export class SqliteGraphStore {
     this.db.exec('PRAGMA journal_mode = WAL')
     this.db.exec('PRAGMA foreign_keys = ON')
     this.db.exec('PRAGMA busy_timeout = 5000')
+    // 库文件含语料原文与图谱，收紧到属主读写（0202 §7）；不支持的平台静默跳过
+    try { chmodSync(location, 0o600) } catch { /* 平台不支持 chmod */ }
     this.migrate()
   }
 
@@ -412,7 +415,9 @@ export class SqliteGraphStore {
         this.db.prepare('UPDATE entity SET description = COALESCE(description, ?) WHERE id = ?').run(e.description, BigInt(id))
       }
       if (e.name !== e.normName) {
-        this.db.prepare('INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)').run(BigInt(id), e.name)
+        const res = this.db.prepare('INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)').run(BigInt(id), e.name)
+        // 新别名落地 → FTS 行重建为 名字+全部别名（0202 §3：别名参与词法召回）
+        if (Number(res.changes) > 0) this.rebuildEntityFtsTx(id)
       }
       return id
     }
@@ -424,6 +429,15 @@ export class SqliteGraphStore {
       this.db.prepare('INSERT OR IGNORE INTO entity_alias (entity_id, alias) VALUES (?, ?)').run(BigInt(id), e.name)
     }
     return id
+  }
+
+  /** 实体 FTS 行 = 展示名 + 全部别名（0202 设计说明：别名合并进 FTS）。 */
+  private rebuildEntityFtsTx(id: number): void {
+    const rows = this.db.prepare('SELECT alias FROM entity_alias WHERE entity_id = ?').all(BigInt(id)) as Array<{ alias: string }>
+    const display = (this.db.prepare('SELECT name FROM entity WHERE id = ?').get(BigInt(id)) as { name: string }).name
+    const text = [display, ...rows.map(r => r.alias)].join(' ')
+    this.db.prepare('DELETE FROM entity_fts WHERE rowid = ?').run(BigInt(id))
+    this.db.prepare('INSERT INTO entity_fts (rowid, name) VALUES (?, ?)').run(BigInt(id), text)
   }
 
   private getEntityId(normName: string): number | undefined {
@@ -486,7 +500,8 @@ export class SqliteGraphStore {
   }
 
   neighbors(id: number, dir: 'out' | 'in' | 'both', types?: readonly string[]): readonly EdgeRow[] {
-    const conds: string[] = []
+    // confidence < 0 = 审查排除（0207 §4.2）：遍历/证据组装一律过滤
+    const conds: string[] = ['r.confidence >= 0']
     const params: (string | bigint)[] = []
     if (dir === 'out') conds.push('r.src_id = ?')
     else if (dir === 'in') conds.push('r.dst_id = ?')
@@ -535,6 +550,12 @@ export class SqliteGraphStore {
   getEntityById(id: number): Entity | null {
     const r = this.db.prepare('SELECT * FROM entity WHERE id = ?').get(BigInt(id)) as EntityRowRaw | undefined
     return r ? this.mapEntity(r) : null
+  }
+
+  /** 单条关系（审查判定时读置信度分桶用）。 */
+  relationById(id: number): Relation | null {
+    const r = this.db.prepare('SELECT * FROM relation WHERE id = ?').get(BigInt(id)) as RelationRowRaw | undefined
+    return r ? this.mapRelation(r) : null
   }
 
   chunksForEntities(ids: readonly number[], limitPerEntity: number): readonly ChunkRef[] {
@@ -589,12 +610,13 @@ export class SqliteGraphStore {
     ).all(...params, BigInt(limit)) as unknown as EntityRowRaw[]
   }
 
-  /** 浏览页抽样审查：按置信度升序抽 N 条关系（低置信优先，确定性）。 */
+  /** 浏览页抽样审查：按置信度升序抽 N 条关系（低置信优先，确定性）。
+   * confidence < 0（审查排除）与已判条目不进入抽样。 */
   sampleRelations(limit: number, excludeIds: readonly number[]): readonly { relation: Relation; srcName: string; dstName: string }[] {
     const excl = excludeIds.length > 0 ? `AND id NOT IN (${excludeIds.map(() => '?').join(',')})` : ''
     const params: (number | bigint)[] = [...excludeIds.map(BigInt), BigInt(limit)]
     const rows = this.db.prepare(
-      `SELECT * FROM relation WHERE confidence < 1.0 ${excl} ORDER BY confidence ASC, id ASC LIMIT ?`,
+      `SELECT * FROM relation WHERE confidence >= 0 AND confidence < 1.0 ${excl} ORDER BY confidence ASC, id ASC LIMIT ?`,
     ).all(...params) as unknown as RelationRowRaw[]
     const need = limit - rows.length
     let rest = rows
@@ -650,7 +672,7 @@ export class SqliteGraphStore {
     const rows = this.db.prepare(
       `SELECT r.*, se.name AS src_name, de.name AS dst_name, se.type AS src_type, de.type AS dst_type FROM relation r
        JOIN entity se ON se.id = r.src_id JOIN entity de ON de.id = r.dst_id
-       WHERE r.src_id IN (${ph}) AND r.dst_id IN (${ph}) ORDER BY r.weight DESC LIMIT ?`,
+       WHERE r.confidence >= 0 AND r.src_id IN (${ph}) AND r.dst_id IN (${ph}) ORDER BY r.weight DESC LIMIT ?`,
     ).all(...params, ...params, BigInt(limit)) as unknown as Array<RelationRowRaw & { src_name: string; dst_name: string; src_type: string; dst_type: string }>
     return rows.map(r => ({ relation: this.mapRelation(r), srcName: r.src_name, dstName: r.dst_name, srcType: r.src_type, dstType: r.dst_type }))
   }

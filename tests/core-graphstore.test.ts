@@ -344,3 +344,38 @@ describe('性能预算（0202 §6 设计点抽检）', () => {
     assert.ok(bfsMs < 1_000, `bfs ${bfsMs}ms`)
   })
 })
+
+describe('审查排除与别名（审计修复回归）', () => {
+
+  test('excludeRelation 后：neighbors/relationsAmong/sampleRelations 一律过滤', () => {
+    const { sourceId, chunkId } = seedFile('excl.md', '甲服务调用乙服务')
+    store.applyExtraction(delta(sourceId, chunkId,
+      [{ normName: '甲服务', name: '甲服务', type: 'module', description: null, confidence: 0.8 },
+        { normName: '乙服务', name: '乙服务', type: 'module', description: null, confidence: 0.7 }],
+      [{ srcNorm: '甲服务', dstNorm: '乙服务', type: 'uses', description: null, confidence: 0.7 }]))
+    const a = store.getEntity('甲服务')!
+    const b = store.getEntity('乙服务')!
+    const rel = store.allRelations().find(r => r.srcId === a.id && r.dstId === b.id)!
+    assert.ok(store.neighbors(a.id, 'both').length >= 1)
+    assert.ok(store.relationsAmong(new Set([a.id, b.id])).length >= 1)
+    store.excludeRelation(rel.id)
+    assert.equal(store.neighbors(a.id, 'both').length, 0)
+    assert.equal(store.relationsAmong(new Set([a.id, b.id])).length, 0)
+    // 重启语义：排除态持久于 confidence<0，抽样不再翻出（无内存排除表也一样）
+    assert.equal(store.sampleRelations(10, []).some(x => x.relation.id === rel.id), false)
+    assert.equal(store.excludedRelationCount(), 1)
+  })
+
+  test('别名并入 FTS 行后，按首见名检索仍命中（rebuild 不丢行）', () => {
+    const { sourceId, chunkId } = seedFile('alias.md', 'ApiGateway 是入口')
+    store.applyExtraction(delta(sourceId, chunkId,
+      [{ normName: 'apigateway', name: 'ApiGateway', type: 'api', description: null, confidence: 0.8 }]))
+    // 第二次以同 norm 变体名出现（大小写/符号差异）→ 追加别名并重建 FTS 行
+    store.applyExtraction(delta(sourceId, chunkId,
+      [{ normName: 'apigateway', name: 'API Gateway', type: 'api', description: null, confidence: 0.9 }]))
+    const ent = store.getEntity('apigateway')!
+    assert.equal(ent.name, 'ApiGateway') // 首见展示名保留
+    const hits = store.findEntitiesByLexical(['apigateway'], 5)
+    assert.ok(hits.some(h => h.entity.id === ent.id))
+  })
+})

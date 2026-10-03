@@ -65,9 +65,10 @@ function parseImports(path: string, text: string): { imports: string[]; specifie
   return { imports, specifiers }
 }
 
-/** 用 oracle 建图：knowledge 语料按 spec 实体/关系回放，codebase 按 import 边回放。 */
-export function buildOracleStore(withCommunities: boolean): SqliteGraphStore {
-  const store = new SqliteGraphStore(':memory:')
+/** 用 oracle 建图：knowledge 语料按 spec 实体/关系回放，codebase 按 import 边回放。
+ * location 缺省 :memory:；传文件路径用于库体积成本指标（0206 §3.3）。 */
+export function buildOracleStore(withCommunities: boolean, location = ':memory:'): SqliteGraphStore {
+  const store = new SqliteGraphStore(location)
   const { entities: specEntities, relations: specRelations } = loadKnowledgeSpec()
   const byId = new Map(specEntities.map(e => [e.id, e]))
   const corpus: { root: string; kind: 'knowledge' | 'code' }[] = [

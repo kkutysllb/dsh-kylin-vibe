@@ -162,6 +162,10 @@ function mapLlmFailure(code: string | undefined, message: string | undefined): G
   if (code === 'NO_ADAPTER') {
     return new GraphRagError('NO_PROVIDER', message ?? '宿主未配置模型 provider')
   }
+  // 上下文超限是可自愈失败：ingest 对该 chunk 对半细分重试一次（0203 §1.5）
+  if (code === 'CONTEXT_WINDOW_EXCEEDED' || code === 'CONTEXT_LENGTH_EXCEEDED') {
+    return new GraphRagError('CONTEXT_WINDOW', message ?? '文本块超出模型上下文窗口')
+  }
   return new GraphRagError('NO_PROVIDER', message ?? `模型调用失败（${code ?? 'UNKNOWN'}）`)
 }
 

@@ -95,23 +95,30 @@
 
 输出 `IndexStatus`：`files`（indexed/stale/quarantined/skipped-binary 计数）、`graph`（entities/relations/communities）、`lastIndexAt`、`staleness`（自上次索引以来的文件变更估计）、`provider`（id + 健康）、`pendingApproval?`。agent 判断"图谱太旧先 re-index"依赖此工具。
 
-### 2.4 `graphrag_index` —— 建图/增量更新（审批门）
+### 2.4 `graphrag_index` —— 建图/增量更新（审批门；后台化）
+
+> **（v0.1.x 实测修订）** 原「调用内前台执行完管线并返回 IndexReport」的形态在 0.2.0 宿主
+> 上不可行：工具调用预算 ~5 分钟，4000+ 路径语料的索引必然超时被 abort（实测 6 分钟）。
+> 修订为**后台启动、立即返回**；IndexReport 经 `graphrag_status` 的进度快照透出
+> （`progress.report`，done 后可读）。
 
 ```jsonc
 {
   "name": "graphrag_index",
-  "description": "索引授权目录（或显式指定的已授权子路径）：分块→LLM 实体关系抽取→社区摘要。增量执行，仅处理变更文件。触发 LLM 调用，成本随变更量线性。",
+  "description": "在后台启动知识图谱索引并立即返回（分块 → LLM 实体关系抽取 → 社区摘要；增量执行，仅处理变更文件）。不等待完成——进度用 graphrag_status 轮询或请用户看面板。触发 LLM 调用成本，需用户审批。",
   "parameters": {
     "type": "object",
     "properties": {
-      "roots": { "type": "array", "items": { "type": "string" }, "description": "可选：本次索引的已授权子路径；缺省用配置 roots" },
+      "kb": { "type": "string", "description": "可选：知识库名；缺省按工作区自动匹配（多库时必须指定）" },
+      "create": { "type": "boolean", "description": "kb 不存在时新建该知识库（需同时给 roots），缺省 false" },
+      "roots": { "type": "array", "items": { "type": "string" }, "description": "create=true 时为新建库的授权目录；否则为本次索引的已授权子路径" },
       "retryQuarantined": { "type": "boolean", "description": "同时重放隔离区，缺省 false" }
     }
   }
 }
 ```
 
-输出 `IndexReport`：`files`（new/changed/deleted/skipped）、`graph delta`（+实体/+边/社区重算数）、`cost`（llm_calls / tokens_in / tokens_out）、`quarantined` 计数、`aborted?`（含可续跑说明）。执行前先做 dry-run 估算并进审批卡。
+输出（即时）：`{started: true, kb, note}` 或 `{started: false, note: '该知识库已有索引在后台运行'}`。完整 `IndexReport`（files new/changed/deleted/skipped、graph delta、cost llm_calls/tokens_in/tokens_out、quarantined、aborted?）在进度 done 后经 `graphrag_status` 可读。执行前先做 dry-run 估算并进审批卡。
 
 ### 2.5 `graphrag_forget` —— 遗忘（审批门）
 
@@ -168,14 +175,19 @@
 
 | 码 | 场景 | 模型看到的短文案 |
 |---|---|---|
-| `NOT_AUTHORIZED` | root 未在授权配置内 | 该路径未被授权索引；请让用户在配置中添加 roots |
-| `NOT_INDEXED` | 查询时无索引 | 工作区尚未建立图谱；先调用 graphrag_index（需审批） |
-| `INDEX_IN_PROGRESS` | 并发索引 | 索引进行中（{progress}），稍后重试或读 graphrag_status |
-| `NO_SEED` | local 查询无种子命中 | 词法未命中实体；换表述或先用 grep 定位实体名 |
-| `AMBIGUOUS_SEED` | traversal 多命中 | 候选：[...]；用更精确的名称重调 |
-| `QUARANTINED` | 隔离区有未处理数据 | {n} 个 chunk 抽取失败被隔离；可用 graphrag_index retryQuarantined 重放 |
-| `NO_PROVIDER` / `MISSING_CREDENTIAL` | llm 面不可用 | 宿主未配置模型 provider；索引/摘要不可用，词法检索与遍历不受影响 |
-| `ABORTED` | 审批拒绝/取消 | 已中止；进度已存档，可再次 graphrag_index 续跑 |
+| `NOT_AUTHORIZED` | root 未在授权配置内 / KB 无 roots | 该路径未被授权索引；请让用户在配置中添加 roots 后重试 |
+| `NOT_INDEXED` | 查询时无索引 / 尚无任何 KB | 工作区尚未建立图谱；先调用 graphrag_index（需审批） |
+| `INDEX_IN_PROGRESS` | 并发索引（保留映射；主路径以 `{started:false}` 表达） | 索引进行中；稍后重试，或先用 graphrag_status 查看进度 |
+| `NO_SEED` | local 查询无种子命中 | 检索词未命中任何实体；换表述或先用 grep 定位实体名 |
+| `AMBIGUOUS_SEED` | traversal 多命中 | 种子名命中多个实体（见 ambiguousSeeds）；用更精确的名称重试 |
+| `KB_AMBIGUOUS` | 多库未指定 / kb 名不存在 | 知识库定位不明确（候选名单见错误详情）；用 kb 参数指定确切名称 |
+| `QUARANTINED` | 隔离区有未处理数据 | 部分内容抽取失败被隔离；可用 graphrag_index 且 retryQuarantined=true 重放 |
+| `NO_PROVIDER` / `MISSING_CREDENTIAL` | llm 面不可用 / 凭据缺失 | 索引/摘要不可用（含可操作指引：会话发消息或配置 model 两项）；词法检索与图遍历不受影响 |
+| `ABORTED` | 审批拒绝/取消 | 已中止；索引进度已存档，可再次 graphrag_index 续跑 |
+| `LLM_TIMEOUT` | 辅助调用流挂起（空闲 90s/总 300s 双护栏） | 模型调用超时（该文件已跳过并标记失败）；索引继续处理其余文件 |
+| `CONTEXT_WINDOW` | chunk 超模型上下文 | 已自动对半细分重试一次；仍失败则该文件标记失败，索引继续 |
+| `INVALID` | 参数/操作对象不合法 | 参数不合法（见错误详情） |
+| `SCHEMA_FUTURE` | 库/注册表由更新版本创建 | 请先升级插件 |
 
 审计层保留码 + 上下文；模型层只透出短文案（学 llm 的"按码路由不按文本"纪律）。
 

@@ -66,29 +66,35 @@ export interface EntityNeighbor {
   readonly evidence: readonly { readonly path: string; readonly lines: string }[]
 }
 
-/** 审查页抽样关系卡。 */
-export interface ReviewSample {
-  readonly id: number
-  readonly s: string
-  readonly r: string
-  readonly o: string
-  readonly confidence: number
-  readonly evidence: readonly { readonly path: string; readonly startLine: number; readonly endLine: number; readonly text: string }[]
-}
+  /** 审查页抽样关系卡。 */
+  export interface ReviewSample {
+    readonly id: number
+    readonly s: string
+    readonly r: string
+    readonly o: string
+    readonly confidence: number
+    readonly evidence: readonly { readonly path: string; readonly startLine: number; readonly endLine: number; readonly text: string }[]
+  }
 
-/** 体检报告（0207 §3.4 结论卡）。 */
-export interface HealthReport {
-  readonly kbName: string
-  readonly files: { readonly indexed: number; readonly stale: number; readonly quarantined: number }
-  readonly coverage: number | null
-  readonly quarantineRate: number | null
-  readonly sampled: number
-  readonly correct: number
-  readonly corrected: number
-  readonly samplePrecision: number | null
-  readonly excludedRelations: number
-  readonly lastIndexAt: number | null
-}
+  /** 体检报告（0207 §3.4 结论卡）。 */
+  export interface HealthReport {
+    readonly kbName: string
+    readonly files: { readonly indexed: number; readonly stale: number; readonly quarantined: number }
+    readonly coverage: number | null
+    readonly quarantineRate: number | null
+    readonly sampled: number
+    readonly correct: number
+    readonly corrected: number
+    readonly samplePrecision: number | null
+    /** 低置信区间（<0.8）单独抽样精确率（0207 §4.2）。 */
+    readonly lowConfSampled: number
+    readonly lowConfCorrect: number
+    readonly lowConfPrecision: number | null
+    readonly excludedRelations: number
+    /** roots 外逃逸检查：absPath 已不在任何授权根内的来源数（0207 §3.4）。 */
+    readonly escapedSources: number
+    readonly lastIndexAt: number | null
+  }
 
 export interface GraphRagProvider {
   readonly id: string
@@ -115,6 +121,12 @@ export interface GraphRagProvider {
   estimate(target: KbRef | undefined, opts: IndexOptions, cwd?: string): { readonly files: number; readonly estCalls: number }
   // ── 浏览与审查面（0207 §3.3/§3.4，面板专用）──
   browseEntities(target: KbRef, query: string, limit: number): readonly EntityCard[]
+  /** 社区列表（0207 §3.3）：摘要 + 成员实体。 */
+  communityList(target: KbRef, limit: number): readonly {
+    readonly id: number; readonly size: number; readonly summary: string | null; readonly top: readonly string[]
+  }[]
+  /** 点击邻居边 → 展开源 chunk 原文（0207 §3.3：行列号 + 文件路径定位）。 */
+  evidenceText(target: KbRef, path: string, lines: string): { readonly path: string; readonly lines: string; readonly text: string } | null
   sampleForReview(target: KbRef, limit: number): readonly ReviewSample[]
   /** 已入库来源清单（面板知识管理，含统计/类型/时间）。 */
   listKnowledge(target: KbRef): readonly {

@@ -37,6 +37,7 @@ const CSS = `
 .gv-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; flex-wrap: wrap; }
 .gv-name { font-weight: 600; font-size: 14px; color: var(--gv-fg); }
 .gv-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--gv-fill); color: var(--gv-fg-secondary); }
+.gv-dot { display: inline-block; width: 9px; height: 9px; border-radius: 999px; flex: none; }
 .gv-roots { color: var(--gv-fg-muted); font-size: 12px; word-break: break-all; margin: 4px 0; }
 .gv-stats { display: flex; flex-wrap: wrap; gap: 12px; margin: 8px 0; color: var(--gv-fg-muted); font-size: 12px; }
 .gv-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }

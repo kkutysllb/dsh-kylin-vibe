@@ -14,7 +14,7 @@ import { runPpr } from './ppr.ts'
 import {
   GraphRagError,
   normName,
-  type EvidenceChunk, type EvidenceCommunity, type EvidenceEntity, type EvidencePack,
+  type Entity, type EvidenceChunk, type EvidenceCommunity, type EvidenceEntity, type EvidencePack,
   type EvidenceRelation, type QueryMode, type Subgraph, type SubgraphEdge, type SubgraphNode,
 } from './types.ts'
 
@@ -47,14 +47,25 @@ export function searchLocal(store: SqliteGraphStore, question: string, opts: Loc
 
   const entities = store.allEntities()
   const relations = store.allRelations()
-  // 种子权重：实体命中按排名（seedLimit..1），chunk 反查实体按命中次数
+  // 种子权重：实体 FTS 直击按 bm25 排名（seedLimit..1）；chunk 反查按**文档秩
+  // 加权和**（rank r 的命中块贡献 1/r，伪相关反馈的秩加权惯例）——原始出现
+  // 次数会被「枢纽实体高频出现于任意命中块」与 sitemap 类枚举页污染（对账
+  // 曾以 count=14 压过词法直击的 12）。总量截到 seedLimit（0203 §2.1「种子
+  // 实体集 S ≤ 12」），FTS 直击优先于反查。
   const seeds = new Map<number, number>()
   seedHits.forEach((h, i) => seeds.set(h.entity.id, seedLimit - i))
-  const chunkCount = new Map<number, number>()
-  for (const h of chunkHits) for (const id of store.entitiesInChunk(h.chunk.id)) {
-    chunkCount.set(id, (chunkCount.get(id) ?? 0) + 1)
+  const chunkRankW = new Map<number, number>()
+  chunkHits.forEach((h, i) => {
+    const w = 1 / (i + 1)
+    for (const id of store.entitiesInChunk(h.chunk.id)) chunkRankW.set(id, (chunkRankW.get(id) ?? 0) + w)
+  })
+  const reverseSeeds = [...chunkRankW.entries()]
+    .filter(([id]) => !seeds.has(id))
+    .sort((a, b) => b[1] - a[1] || a[0] - b[0])
+  for (const [id, w] of reverseSeeds) {
+    if (seeds.size >= seedLimit) break
+    seeds.set(id, w)
   }
-  for (const [id, c] of chunkCount) seeds.set(id, (seeds.get(id) ?? 0) + c)
   // meta 的 seedHits 用两路合计去重数
   const seedHitTotal = new Set([...seedHits.map(h => h.entity.id), ...chunkSeedIds]).size
 
@@ -64,9 +75,19 @@ export function searchLocal(store: SqliteGraphStore, question: string, opts: Loc
     seeds,
     opts.ppr,
   )
+  // 呈现序 = 种子分 ⊕ PPR 分的凸组合（各按最大值归一，各占一半）：
+  // 纯 PPR 会把高度数枢纽排到被问实体之前，严格分层则把 PPR 强的桥接实体
+  // 挡在种子层后——凸组合让「词法直击」（问题点名实体）与「图邻近」（多跳
+  // 桥接）各执一半话语权（混合检索的标准融合公式，无调参）。
+  let maxSeedW = 0
+  for (const w of seeds.values()) if (w > maxSeedW) maxSeedW = w
+  let maxPpr = 0
+  for (const v of scores.values()) if (v > maxPpr) maxPpr = v
+  const combo = (id: number): number =>
+    0.5 * ((seeds.get(id) ?? 0) / maxSeedW) + 0.5 * ((scores.get(id) ?? 0) / maxPpr)
   const topEntities = [...entities]
     .filter(e => scores.get(e.id) !== undefined)
-    .sort((a, b) => (scores.get(b.id) ?? 0) - (scores.get(a.id) ?? 0))
+    .sort((a, b) => combo(b.id) - combo(a.id) || a.id - b.id)
     .slice(0, topK)
   const topIds = new Set(topEntities.map(e => e.id))
 
@@ -117,9 +138,15 @@ export function searchLocal(store: SqliteGraphStore, question: string, opts: Loc
 
 // ── global ───────────────────────────────────────────────────────────────────
 
-/** 打分器抽象：一期词法实现（零 LLM），宿主可注入 LLM 打分（0203 §2.2）。 */
+/** 打分器抽象：词法实现零 LLM；LLM 实现走 scoreAll 分批打分（0203 §2.2），
+ * 单批失败由实现方自行回落词法分（检索可用性优先）。 */
 export interface GlobalScorer {
   score(question: string, summaryText: string): number
+  /** 分批 LLM 打分（可选）：一次返回全部摘要的 0-10 分与成本。 */
+  scoreAll?(
+    question: string,
+    summaries: readonly string[],
+  ): Promise<{ readonly scores: readonly number[]; readonly llmCalls: number; readonly tokensIn: number; readonly tokensOut: number }>
 }
 
 export const lexicalGlobalScorer: GlobalScorer = {
@@ -135,7 +162,7 @@ export interface GlobalOptions {
   readonly maxTokens?: number
 }
 
-export function searchGlobal(store: SqliteGraphStore, question: string, opts: GlobalOptions = {}): EvidencePack {
+export async function searchGlobal(store: SqliteGraphStore, question: string, opts: GlobalOptions = {}): Promise<EvidencePack> {
   const scorer = opts.scorer ?? lexicalGlobalScorer
   const topN = opts.topCommunities ?? 5
   const maxTokens = opts.maxTokens ?? 6000
@@ -143,9 +170,23 @@ export function searchGlobal(store: SqliteGraphStore, question: string, opts: Gl
   const summaries = store.allSummaries()
   if (summaries.length === 0) throw new GraphRagError('NOT_INDEXED', '尚无社区摘要（先建图并生成摘要）')
 
-  const ranked = summaries
-    .map(s => ({ s, score: scorer.score(question, s.summary) }))
-    .sort((a, b) => b.score - a.score || a.s.communityId - b.s.communityId)
+  // ≤8 个社区：全部直进证据包，零 LLM（0203 §2.2 第 1 步）
+  let ranked: { s: (typeof summaries)[number]; score: number }[]
+  let llmCalls = 0
+  let tokensIn = 0
+  let tokensOut = 0
+  if (summaries.length > 8 && scorer.scoreAll !== undefined) {
+    const out = await scorer.scoreAll(question, summaries.map(s => s.summary))
+    ranked = summaries.map((s, i) => ({ s, score: out.scores[i] ?? 0 }))
+      .sort((a, b) => b.score - a.score || a.s.communityId - b.s.communityId)
+    llmCalls = out.llmCalls
+    tokensIn = out.tokensIn
+    tokensOut = out.tokensOut
+  } else {
+    ranked = summaries
+      .map(s => ({ s, score: scorer.score(question, s.summary) }))
+      .sort((a, b) => b.score - a.score || a.s.communityId - b.s.communityId)
+  }
   const picked = summaries.length <= 8 ? ranked : ranked.slice(0, topN)
 
   const communities: EvidenceCommunity[] = []
@@ -162,7 +203,7 @@ export function searchGlobal(store: SqliteGraphStore, question: string, opts: Gl
   return {
     mode: 'global', question,
     entities, relations: [], chunks: fitTokenBudget(chunks, maxTokens), communities,
-    meta: { mode: 'global', seedHits: 0, pprIterations: null, llmCalls: 0, coverage: coverageOf(store) },
+    meta: { mode: 'global', seedHits: 0, pprIterations: null, llmCalls, tokensIn, tokensOut, coverage: coverageOf(store) },
   }
 }
 

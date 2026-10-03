@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 
 import { createKbRuntime } from '../src/client/runtime.ts'
+import { createHostBridge } from '../src/client/bridge.ts'
 import { dictionaries, en, NS, zh } from '../src/client/locales.ts'
 import { installStyles } from '../src/client/styles.ts'
 
@@ -11,6 +12,8 @@ test('runtime：快照轮询 + 动作刷新（RPC 桩）', async () => {
   const calls: { endpoint: string; payload: unknown }[] = []
   let snapshot = { kbs: [{ id: 'kb1', name: '冒烟库', roots: ['/tmp'], description: null, managed: 'user', createdAt: 1, lastIndexedAt: null, progress: null }] }
   const runtime = createKbRuntime({
+    bridge: createHostBridge({}),
+    t: (key: string) => key,
     rpc: { call: async (_channel, endpoint, payload) => {
       calls.push({ endpoint, payload })
       if (endpoint === 'snapshot') return { ok: true, value: snapshot }
@@ -29,11 +32,11 @@ test('runtime：快照轮询 + 动作刷新（RPC 桩）', async () => {
   assert.ok(calls.some(c => c.endpoint === 'index'))
   // 错误信封 → notice
   await runtime.remove('missing').catch(() => {})
-  assert.ok(runtime.notice.getSnapshot()?.includes('失败') ?? false, 'notice 应携带失败文案')
+  assert.ok(runtime.notice.getSnapshot()?.includes('noticeKbDeleteFailed') ?? false, 'notice 应携带失败文案（经词典 key 本地化）')
 })
 
 test('runtime：RPC 失败 → error 相位', async () => {
-  const runtime = createKbRuntime({ rpc: { call: async () => { throw new Error('channel dead') } } })
+  const runtime = createKbRuntime({ bridge: createHostBridge({}), t: (key: string) => key, rpc: { call: async () => { throw new Error('channel dead') } } })
   await runtime.refresh()
   assert.equal(runtime.source.getSnapshot().phase, 'error')
   assert.match(runtime.source.getSnapshot().error ?? '', /channel dead/)

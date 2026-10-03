@@ -167,20 +167,56 @@ function CreateForm(props: {
 function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; readonly t: Translate }): React.ReactElement {
   const { kb, runtime, t } = props
   const [exploreOpen, setExploreOpen] = useState(false)
+  /** dry-run 预估（0207 §3.1）：索引前展示成本卡，确认后才启动。 */
+  const [estimate, setEstimate] = useState<{ readonly files: number; readonly estCalls: number } | null | undefined>(undefined)
   const progress = kb.progress
   const running = progress !== null && progress.phase !== 'done' && progress.phase !== 'error'
   const pct = progress !== null && progress.filesTotal > 0
     ? Math.round((progress.filesDone / progress.filesTotal) * 100)
     : running ? 5 : 0
+  /** 健康度灯（0207 §3.1）：红=有隔离/未建；黄=有陈旧；绿=新鲜。 */
+  const health = progress !== null && progress.phase === 'error'
+    ? { color: '#e5484d', label: t('healthError') }
+    : (progress?.quarantined ?? 0) > 0
+      ? { color: '#e5484d', label: t('healthRed') }
+      : kb.filesIndexed === 0
+        ? { color: '#e5484d', label: t('healthEmpty') }
+        : kb.stale > 0
+          ? { color: '#f5a623', label: t('healthYellow') }
+          : { color: '#30a46c', label: t('healthGreen') }
 
   const remove = (): void => {
     // eslint-disable-next-line no-alert
     if (window.confirm(t('confirmDelete', { name: kb.name }))) void runtime.remove(kb.id)
   }
 
+  const forgetGraph = (): void => {
+    // eslint-disable-next-line no-alert
+    if (window.confirm(t('confirmForgetGraph', { name: kb.name }))) {
+      setEstimate(undefined)
+      void runtime.forgetGraph(kb.id)
+    }
+  }
+
+  const onIndexClick = (): void => {
+    // 已有预估卡 = 用户确认 → 启动；否则先取 dry-run 估算
+    if (estimate !== null && estimate !== undefined) {
+      setEstimate(undefined)
+      void runtime.startIndex(kb.id)
+      return
+    }
+    setEstimate(null)
+    void runtime.estimate(kb.id)
+      .then(est => setEstimate(est))
+      .catch(() => setEstimate(undefined))
+  }
+
+  const fmtK = (n: number): string => (n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n))
+
   return (
     <div className='gv-card'>
       <div className='gv-card-head'>
+        <span className='gv-dot' style={{ background: health.color }} title={health.label} aria-label={health.label} />
         <span className='gv-name'>{kb.name}</span>
         {kb.managed === 'config' && <span className='gv-badge'>{t('managedByConfig')}</span>}
         {progress !== null && progress.phase === 'error' && <span className='gv-badge'>{t('phaseError')}</span>}
@@ -192,6 +228,7 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
         <span>{t('filesIndexed')}: {progress !== null && running ? `${progress.filesDone}/${progress.filesTotal}` : kb.filesIndexed}</span>
         <span>{t('entities')}: {kb.entities}</span>
         <span>{t('relations')}: {kb.relations}</span>
+        <span>{t('communitiesShort')}: {kb.communities}</span>
         <span>{t('quarantined')}: {progress?.quarantined ?? 0}</span>
         <span>{t('lastIndex')}: {formatTime(kb.lastIndexedAt, t)}</span>
       </div>
@@ -201,7 +238,7 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
           <div className='gv-current'>
             {t('phaseLabel', { phase: progress?.phase ?? '' })}
             {progress?.currentFile !== null && progress?.currentFile !== undefined ? ` — ${progress.currentFile}` : ''}
-            {' · '}LLM {progress?.llmCalls ?? 0}
+            {' · '}LLM {progress?.llmCalls ?? 0} · ↑{fmtK(progress?.tokensIn ?? 0)} ↓{fmtK(progress?.tokensOut ?? 0)}
           </div>
         </>
       )}
@@ -213,10 +250,21 @@ function KbCard(props: { readonly kb: KbView; readonly runtime: KbRuntime; reado
           calls: progress.report.cost.llmCalls,
         })}</div>
       )}
+      {estimate !== undefined && estimate === null && <div className='gv-cost'>{t('loading')}</div>}
+      {estimate !== undefined && estimate !== null && (
+        <div className='gv-notice' style={{ marginTop: 6 }}>
+          <span>{estimate.files > 0
+            ? t('estimateCard', { files: estimate.files, calls: estimate.estCalls })
+            : t('estimateNone')}</span>
+          <button className='gv-btn gv-btn-primary' onClick={onIndexClick}>{estimate.files > 0 ? t('estimateConfirm') : t('index')}</button>
+          <button className='gv-btn' onClick={() => setEstimate(undefined)}>{t('cancel')}</button>
+        </div>
+      )}
       <div className='gv-actions'>
-        <button className='gv-btn gv-btn-primary' disabled={running || kb.managed === 'config' && kb.roots.length === 0} onClick={() => void runtime.startIndex(kb.id)}>{t('index')}</button>
+        <button className='gv-btn gv-btn-primary' disabled={running || kb.managed === 'config' && kb.roots.length === 0} onClick={onIndexClick}>{t('index')}</button>
         {running && <button className='gv-btn gv-btn-danger' onClick={() => void runtime.cancel(kb.id)}>{t('cancelIndex')}</button>}
         <button className='gv-btn' onClick={() => setExploreOpen(open => !open)}>{exploreOpen ? t('closeExplore') : t('explore')}</button>
+        {kb.managed !== 'config' && <button className='gv-btn gv-btn-danger' onClick={forgetGraph}>{t('forgetGraph')}</button>}
         {kb.managed !== 'config' && <button className='gv-btn gv-btn-danger' onClick={remove}>{t('delete')}</button>}
       </div>
       {exploreOpen && <BrowseReviewView runtime={runtime} t={t} kbId={kb.id} roots={kb.roots} />}
