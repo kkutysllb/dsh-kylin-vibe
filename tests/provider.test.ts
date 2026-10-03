@@ -9,7 +9,7 @@ import { after, before, describe, test } from 'node:test'
 
 import type { Context } from '@deepseek-ai/cordis'
 
-import { callerFrom, llmCompleterOf, resolveDataDir, workspaceDir } from '../src/adapter.ts'
+import { callerFrom, llmCompleterOf, resolveDataDir, watchSessionRoutes, workspaceDir } from '../src/adapter.ts'
 import { GraphRagServiceImpl, type GraphRagProvider } from '../src/index.ts'
 import { clampConfig, declaredKbsOf, LocalGraphRagProvider } from '../src/provider.ts'
 import { GraphRagError, type EvidencePack, type ForgetReport, type IndexReport, type IndexStatus, type Subgraph } from '../src/core/types.ts'
@@ -141,6 +141,130 @@ describe('llmCompleterOf', () => {
     const controller = new AbortController()
     controller.abort()
     await assert.rejects(llm.complete('s', 'u', controller.signal), (e: unknown) => e instanceof GraphRagError && e.code === 'ABORTED')
+  })
+})
+
+// ── 会话模型路由跟随（0.1.3：插件 model 配置缺省时跟随宿主当前选择）────────
+
+function ctxWithOn(): { ctx: Context; fire: (session: unknown, event: unknown) => void } {
+  let handler: ((session: unknown, event: unknown) => void) | null = null
+  const ctx = {
+    on: (name: string, h: (s: unknown, e: unknown) => void) => {
+      if (name === 'session/event') handler = h
+      return () => {}
+    },
+  } as unknown as Context
+  return { ctx, fire: (session, event) => handler?.(session, event) }
+}
+const headerEvent = (provider: string, model: string): unknown => ({ type: 'request/header', data: { header: { config: { provider, model } } } })
+
+describe('watchSessionRoutes', () => {
+
+  test('request/header 记录按会话路由与全局最新；未知会话回落全局；无关事件忽略', () => {
+    const { ctx, fire } = ctxWithOn()
+    const w = watchSessionRoutes(ctx)
+    assert.ok(w !== null)
+    fire({ id: 's1' }, headerEvent('p1', 'm1'))
+    fire({ id: 's2' }, headerEvent('p2', 'm2'))
+    fire({ id: 's1' }, { type: 'user/message' })
+    fire({ id: 's1' }, headerEvent('p1b', 'm1b'))
+    fire({ id: 's1' }, headerEvent('', ''))   // 空 provider/model：忽略
+    assert.deepEqual(w.routeFor('s1'), { provider: 'p1b', model: 'm1b' })
+    assert.deepEqual(w.routeFor('s2'), { provider: 'p2', model: 'm2' })
+    assert.deepEqual(w.routeFor(), { provider: 'p1b', model: 'm1b' })
+    assert.deepEqual(w.routeFor('missing'), { provider: 'p1b', model: 'm1b' })
+  })
+
+  test('事件面缺席或注册抛错 → null（静默降级，不影响宿主）', () => {
+    assert.equal(watchSessionRoutes({} as unknown as Context), null)
+    assert.equal(watchSessionRoutes({ on: () => { throw new Error('event bus dead') } } as unknown as Context), null)
+  })
+})
+
+describe('抽取模型跟随（provider 配置缺省不再拒绝）', () => {
+  let dir: string
+  const seenRoutes: { provider: string; model: string }[] = []
+
+  /** ctx：llm 桩记录每次 stream 收到的路由；可选 on 事件面。 */
+  function routeCtx(onFeed?: (fire: (session: unknown, event: unknown) => void) => void): Context {
+    const ctx: Record<string, unknown> = {
+      llm: {
+        stream: (opts: { provider: string; model: string }) => {
+          seenRoutes.push({ provider: opts.provider, model: opts.model })
+          return (async function* () {
+            yield { type: 'text-delta', text: JSON.stringify({ entities: [{ n: '订单服务', t: 'module', d: null, c: 0.8 }], relations: [] }) }
+          })()
+        },
+      },
+    }
+    if (onFeed !== undefined) ctx['on'] = (name: string, h: (s: unknown, e: unknown) => void) => { if (name === 'session/event') onFeed((s, e) => h(s, e)); return () => {} }
+    return ctx as unknown as Context
+  }
+
+  before(() => {
+    dir = mkdtempSync(join(tmpdir(), 'graphrag-route-'))
+    mkdirSync(join(dir, 'docs'), { recursive: true })
+    writeFileSync(join(dir, 'docs', 'a.md'), '订单服务使用库存服务。\n')
+  })
+
+  test('配置缺省 + 会话路由 → index 用该会话当前模型启动；不传 sessionId 回落全局最新', async () => {
+    const watcher = watchSessionRoutes(routeCtx(fire => fire({ id: 's1' }, headerEvent('sess-p', 'sess-m'))))
+    assert.ok(watcher !== null)
+    const p = new LocalGraphRagProvider(clampConfig({ dataDir: join(dir, 'r1') }), { ctx: routeCtx(), routes: watcher })
+    try {
+      const kb = p.createKb({ name: 'route1', roots: [join(dir, 'docs')] })
+      const started = p.indexBackground({ id: kb.id }, {}, 's1')
+      assert.equal(started.started, true)
+      // 轮询到后台索引结束（llm 桩同步产文，秒级内收敛）
+      for (let i = 0; i < 100; i++) {
+        const pr = p.progress(kb.id)
+        if (pr === null || pr.phase === 'done' || pr.phase === 'error') break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.deepEqual(seenRoutes[0], { provider: 'sess-p', model: 'sess-m' })
+      // 面板触发（无 sessionId）→ 全局最新路由，同样能启动
+      seenRoutes.length = 0
+      const kb2 = p.createKb({ name: 'route1b', roots: [join(dir, 'docs')] })
+      assert.equal(p.indexBackground({ id: kb2.id }, {}).started, true)
+      for (let i = 0; i < 100; i++) {
+        const pr = p.progress(kb2.id)
+        if (pr === null || pr.phase === 'done' || pr.phase === 'error') break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.deepEqual(seenRoutes[0], { provider: 'sess-p', model: 'sess-m' })
+    } finally {
+      p.dispose()
+    }
+  })
+
+  test('显式配置优先于会话路由；两者皆缺 → NO_PROVIDER 带可操作指引', async () => {
+    const manualWatcher = { routeFor: () => ({ provider: 'sess-p', model: 'sess-m' }) }
+    const p = new LocalGraphRagProvider(
+      clampConfig({ dataDir: join(dir, 'r2'), model: { provider: 'cfg-p', model: 'cfg-m' } }),
+      { ctx: routeCtx(), routes: manualWatcher },
+    )
+    try {
+      const kb = p.createKb({ name: 'route2', roots: [join(dir, 'docs')] })
+      const started = p.indexBackground({ id: kb.id }, {}, 's1')
+      assert.equal(started.started, true)
+      for (let i = 0; i < 100; i++) {
+        const pr = p.progress(kb.id)
+        if (pr === null || pr.phase === 'done' || pr.phase === 'error') break
+        await new Promise(resolve => setTimeout(resolve, 20))
+      }
+      assert.deepEqual(seenRoutes.at(-1), { provider: 'cfg-p', model: 'cfg-m' })
+    } finally {
+      p.dispose()
+    }
+
+    const p2 = new LocalGraphRagProvider(clampConfig({ dataDir: join(dir, 'r3') }), { ctx: routeCtx() })
+    try {
+      const kb = p2.createKb({ name: 'route3', roots: [join(dir, 'docs')] })
+      await assert.rejects(p2.index({ name: kb.name }, {}, new AbortController().signal, 's9'),
+        (e: unknown) => e instanceof GraphRagError && e.code === 'NO_PROVIDER' && /model\.provider/.test(e.message))
+    } finally {
+      p2.dispose()
+    }
   })
 })
 

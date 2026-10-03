@@ -100,9 +100,11 @@ export interface GraphRagProvider {
   // ── 检索面（status 不传 target = 总览；query/traverse 缺省 = 默认解析链，
   // cwd 参与解析：caller 工作区命中唯一 KB 的 roots 时自动选中）──
   status(target?: KbRef): Promise<IndexStatus>
-  index(target: KbRef, opts: IndexOptions, signal: AbortSignal): Promise<IndexReport>
+  /** sessionId：agent 工具触发时传调用会话 id（抽取模型跟随该会话当前路由）；
+   * 面板触发不传（回落全局最近路由）。配置 model 显式指定时始终优先。 */
+  index(target: KbRef, opts: IndexOptions, signal: AbortSignal, sessionId?: string): Promise<IndexReport>
   /** 面板触发的后台索引：立即返回（同库互斥），进度经 progress() 轮询。 */
-  indexBackground(target: KbRef, opts: IndexOptions): { readonly started: boolean }
+  indexBackground(target: KbRef, opts: IndexOptions, sessionId?: string): { readonly started: boolean }
   progress(kbId: string): import('./core/types.ts').IndexProgress | null
   cancelIndex(kbId: string): boolean
   query(target: KbRef | undefined, q: QueryInput, cwd?: string): Promise<EvidencePack>

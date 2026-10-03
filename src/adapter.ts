@@ -74,6 +74,57 @@ export function capabilities(ctx: Context): HostCapabilities {
   return { llm: llmServiceOf(ctx) != null }
 }
 
+// ── 会话模型路由跟随（0.1.3：插件 model 配置缺省时跟随宿主当前选择）────────
+
+export interface SessionRouteWatcher {
+  /** 触发会话的当前路由；无会话上下文（面板触发）时回落最近一次见到的路由。 */
+  routeFor(sessionId?: string): LlmRoute | null
+}
+
+/** 宿主 session/event 的 request/header 事件携带该会话请求头里的模型路由
+ * （header.config.{provider, model}；kylin-memory 同款先例，真机验证过的形）。 */
+export function routeFromSessionEvent(event: unknown): LlmRoute | null {
+  const e = event as { type?: unknown; data?: { header?: { config?: { provider?: unknown; model?: unknown } } } } | null | undefined
+  if (e === null || e === undefined || e.type !== 'request/header') return null
+  const provider = e.data?.header?.config?.provider
+  const model = e.data?.header?.config?.model
+  return typeof provider === 'string' && provider !== '' && typeof model === 'string' && model !== ''
+    ? { provider, model }
+    : null
+}
+
+/** 监听宿主会话事件流记录模型路由：按会话各留最新一条，另留全局最新一条。
+ * 纯观察者——事件面缺席/载荷形变/注册抛错一律静默降级（返回 null = 无跟随
+ * 能力，抽取回落到显式配置或 NO_PROVIDER 指引），绝不影响宿主事件总线。 */
+export function watchSessionRoutes(ctx: Context): SessionRouteWatcher | null {
+  const on = (ctx as { on?: unknown } & Context).on
+  if (typeof on !== 'function') return null
+  const bySession = new Map<string, LlmRoute>()
+  let latest: LlmRoute | null = null
+  try {
+    ;(on as (name: string, handler: (session: unknown, event: unknown) => void) => unknown).call(ctx, 'session/event', (session: unknown, event: unknown) => {
+      try {
+        const route = routeFromSessionEvent(event)
+        if (route === null) return
+        const id = (session as { id?: unknown } | null | undefined)?.id
+        if (typeof id === 'string') bySession.set(id, route)
+        latest = route
+      } catch { /* 载荷形变：忽略本条 */ }
+    })
+  } catch {
+    return null
+  }
+  return {
+    routeFor(sessionId?: string): LlmRoute | null {
+      if (sessionId !== undefined) {
+        const r = bySession.get(sessionId)
+        if (r !== undefined) return r
+      }
+      return latest
+    },
+  }
+}
+
 // ── ctx.llm → LlmCompleter ──────────────────────────────────────────────────
 
 export interface LlmRoute {

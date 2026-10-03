@@ -8,7 +8,7 @@
       config:
         roots: []            # 授权索引根（显式授权，ADR-9）；示例 ['/abs/path/repo']
         # excludes: ['.git', '.env*', '*secret*']
-        # model: { provider: null, model: null }   # 缺省跟随宿主当前选择（需两者都配置才生效）
+        # model: { provider: x, model: y }   # 显式固定抽取模型（两项都必填）；缺省跟随宿主会话当前模型（建库表单选定即生效）
         # extract: { minConfidence: 0.6, repairRetries: 1 }
         # community: { recomputeThreshold: 0.05 }
         # dataDir: '/abs/path'                     # 缺省 $DSH_HOME/graphrag → ~/.dsh/graphrag

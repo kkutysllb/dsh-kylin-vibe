@@ -8,7 +8,7 @@
 import { copyFileSync, mkdirSync, existsSync, readdirSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf } from './adapter.ts'
+import { llmCompleterOf, llmServiceOf, resolveDataDir, visionCompleterOf, watchSessionRoutes, type SessionRouteWatcher } from './adapter.ts'
 import type { ChunkOptions } from './core/chunker.ts'
 import { extractChunk, type LlmCompleter, type VisionCompleter } from './core/extractor.ts'
 import { runIngest, type CommunitySummarizer, type IngestConfig } from './core/ingest.ts'
@@ -55,9 +55,15 @@ export interface ProviderConfig {
   readonly retry: { readonly rateLimitRetries: number; readonly baseDelayMs: number }
 }
 
+/** 抽取模型彻底无来源（显式配置与会话路由跟随都落空）时的错误指引：
+ * 面向 agent 转述——写清两条可行路径，agent 可据此直接指导用户。 */
+const NO_PROVIDER_GUIDANCE =
+  '抽取模型不可用：插件未配置 dsh-kylin-vibe/provider 的 model.{provider, model}，也未捕获到宿主会话的当前模型路由。二选一：' +
+  '①在宿主会话里发送一条消息（建库表单选定的模型会随 agent 代建自动生效），然后重新发起索引；' +
+  '②在插件配置中显式设置 model.provider 与 model.model（两项都必填）'
+
 /** patch 行 config 是普通对象：逐字段防御钳制（学 automation Config 处理）。 */
-export function clampConfig(raw: ProviderConfigInput, env: NodeJS.ProcessEnv = process.env): ProviderConfig {
-  const model = raw.model != null
+export function clampConfig(raw: ProviderConfigInput, env: NodeJS.ProcessEnv = process.env): ProviderConfig {  const model = raw.model != null
     && typeof raw.model.provider === 'string' && raw.model.provider !== ''
     && typeof raw.model.model === 'string' && raw.model.model !== ''
     ? { provider: raw.model.provider, model: raw.model.model, maxTokens: raw.model.maxTokens }
@@ -125,6 +131,8 @@ export interface LocalProviderDeps {
   readonly ctx: Context | null
   /** 直注 completer（测试/嵌入用；优先于 ctx.llm 路由）。 */
   readonly llm?: LlmCompleter | null
+  /** 会话模型路由跟随（配置 model 缺省时的抽取模型来源；apply 装配）。 */
+  readonly routes?: SessionRouteWatcher | null
 }
 
 export class LocalGraphRagProvider implements GraphRagProvider {
@@ -151,21 +159,30 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   }
 
   /** 调用时惰性解析（0.2.0 宿主实测：未 inject 的服务属性访问会抛错，
-   * 必须走 reflect.get 非严格读取；且插件 apply 可能早于 llm provide）。 */
-  private completer(): LlmCompleter | null {
-    if (this.cachedLlm !== undefined) return this.cachedLlm
+   * 必须走 reflect.get 非严格读取；且插件 apply 可能早于 llm provide）。
+   * 模型路由解析序：显式配置 model（两项都非空）> 会话路由跟随（优先触发
+   * 索引的会话，面板触发回落最近一次会话请求头）——配置缺省不再直接拒绝。
+   * 跟随路由不缓存（宿主当前选择可变）；解析失败不缓存 null（llm 可能后到）。 */
+  private completer(sessionId?: string): LlmCompleter | null {
+    if (this.directLlm !== null) return this.directLlm
     const ctx = this.deps.ctx
-    const model = this.config.model
-    const llmService = ctx === null ? null : llmServiceOf(ctx)
-    if (model === null || llmService === null || ctx === null) {
-      this.cachedLlm = null
-      return null
+    if (ctx === null) return null
+    if (llmServiceOf(ctx) === null) return null
+    const fixed = this.config.model
+    if (fixed !== null) {
+      if (this.cachedLlm === undefined || this.cachedLlm === null) {
+        this.cachedLlm = llmCompleterOf(ctx, fixed, this.config.retry)
+      }
+      return this.cachedLlm
     }
-    this.cachedLlm = llmCompleterOf(ctx, model, this.config.retry)
-    return this.cachedLlm
+    const route = this.deps.routes?.routeFor(sessionId) ?? null
+    if (route === null) return null
+    return llmCompleterOf(ctx, route, this.config.retry)
   }
 
-  /** 视觉链路（可选）：附件服务/模型不支持时为 null（ingest 据此降级）。 */
+  /** 视觉链路（可选）：附件服务缺席或模型路由未定 → null（ingest 据此降级）。
+   * 视觉只在显式配置 model 时启用：跟随会话路由可能选中无视觉能力的模型，
+   * 让图片文件以 LLM_ERROR 失败不如明确降级为 vision-unavailable。 */
   private cachedVision: VisionCompleter | null | undefined
   private visionOf(): VisionCompleter | null {
     if (this.cachedVision !== undefined) return this.cachedVision
@@ -268,8 +285,9 @@ export class LocalGraphRagProvider implements GraphRagProvider {
   private readonly progressRecords = new Map<string, IndexProgress>()
   private readonly controllers = new Map<string, AbortController>()
 
-  /** 面板触发的后台索引：立即返回，进度经 progress() 轮询。同库互斥。 */
-  indexBackground(target: KbRef, opts: IndexOptions): { readonly started: boolean } {
+  /** 面板触发的后台索引：立即返回，进度经 progress() 轮询。同库互斥。
+   * sessionId：agent 工具触发时传入（抽取模型跟随该会话当前路由）；面板触发不传（回落全局最新路由）。 */
+  indexBackground(target: KbRef, opts: IndexOptions, sessionId?: string): { readonly started: boolean } {
     const kb = this.resolveKb(target)
     const running = this.progressRecords.get(kb.id)
     if (running !== undefined && running.phase !== 'done' && running.phase !== 'error') {
@@ -278,9 +296,10 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     if (this.effectiveRoots(kb).length === 0) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
-    const llm = this.completer()
+    // 路由在启动时定格一次：长索引期间用户切换会话模型不影响本次抽取一致性
+    const llm = this.completer(sessionId)
     if (llm === null) {
-      throw new GraphRagError('NO_PROVIDER', '模型 provider 不可用（宿主未配置 llm 或插件未配置 model）')
+      throw new GraphRagError('NO_PROVIDER', NO_PROVIDER_GUIDANCE)
     }
     const store = this.storeOf(kb)
     if (opts.retryQuarantined) {
@@ -402,14 +421,14 @@ export class LocalGraphRagProvider implements GraphRagProvider {
 
   // ── 索引 / 查询 / 遍历 / 遗忘 ─────────────────────────────────────────────
 
-  async index(target: KbRef, opts: IndexOptions, signal: AbortSignal): Promise<IndexReport> {
+  async index(target: KbRef, opts: IndexOptions, signal: AbortSignal, sessionId?: string): Promise<IndexReport> {
     const kb = this.resolveKb(target)
     if (this.effectiveRoots(kb).length === 0) {
       throw new GraphRagError('NOT_AUTHORIZED', `知识库「${kb.name}」未配置授权 roots；请在面板或配置中添加`)
     }
-    const llm = this.completer()
+    const llm = this.completer(sessionId)
     if (llm === null) {
-      throw new GraphRagError('NO_PROVIDER', '模型 provider 不可用（宿主未配置 llm 或插件未配置 model）；词法检索与遍历不受影响')
+      throw new GraphRagError('NO_PROVIDER', `${NO_PROVIDER_GUIDANCE}；词法检索与遍历不受影响`)
     }
     const store = this.storeOf(kb)
     if (opts.retryQuarantined) {
@@ -744,7 +763,7 @@ export class LocalGraphRagProvider implements GraphRagProvider {
     const clipped = text.length > 2000 ? text.slice(0, 2000) : text
     if (clipped.trim() === '') return { triples: [] }
     const llm = this.completer()
-    if (llm === null) throw new GraphRagError('NO_PROVIDER', '模型 provider 不可用，请手动填写更正')
+    if (llm === null) throw new GraphRagError('NO_PROVIDER', `${NO_PROVIDER_GUIDANCE}（也可直接手动填写更正）`)
     const result = await extractChunk(llm, clipped, '面板更正选区', { minConfidence: 0.6, repairRetries: 0 })
     if (!result.ok) return { triples: [] }
     return {
@@ -865,6 +884,8 @@ export function apply(ctx: Context, rawConfig: ProviderConfigInput = {}): void {
     return
   }
   const config = clampConfig(rawConfig)
-  const provider = new LocalGraphRagProvider(config, { ctx }, declaredKbsOf(rawConfig))
+  // 会话模型路由跟随：显式配置 model 缺省时，抽取自动用宿主会话当前模型
+  // （建库表单选定的模型经 agent 代建 → 会话 durable 选择 → 此处捕获，全链路打通）
+  const provider = new LocalGraphRagProvider(config, { ctx, routes: watchSessionRoutes(ctx) }, declaredKbsOf(rawConfig))
   ctx.effect(() => service.register(provider), 'dsh-kylin-vibe: provider registration')
 }

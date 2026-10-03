@@ -144,6 +144,7 @@ function CreateForm(props: {
                 </option>
               ))}
             </select>
+            <div style={{ fontSize: 11, color: 'var(--gv-fg-muted, var(--dsw-alias-label-tertiary, #8a94a3))', marginTop: 4 }}>{t('formModelHint')}</div>
           </div>
         )}
       </div>

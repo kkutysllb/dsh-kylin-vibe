@@ -515,10 +515,10 @@ export function GraphView(props: { readonly t: Translate; readonly runtime: KbRu
       const f = (dist - SPRING_REST) * SPRING_STIFF
       const ux = dx / dist
       const uy = dy / dist
-      dispX[ia] -= ux * f
-      dispY[ia] -= uy * f
-      dispX[ib] += ux * f
-      dispY[ib] += uy * f
+      dispX[ia]! -= ux * f
+      dispY[ia]! -= uy * f
+      dispX[ib]! += ux * f
+      dispY[ib]! += uy * f
     }
     const pinnedId = dragRef.current.id
     for (let i = 0; i < n; i++) {

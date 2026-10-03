@@ -223,7 +223,8 @@ export function graphragToolDefs(services: ToolServices, config: ToolConfig = {}
         }
         // 后台执行：大语料索引远超工具调用预算（0.2.0 宿主实测 4000+ 路径
         // 5 分钟即被 abort），绝不在调用内等待 ingest 完成。
-        const started = resolve().indexBackground(kbRefOf(a) ?? {}, opts)
+        // 传 caller.sessionId：抽取模型跟随本会话当前选择（建库表单选定即生效）。
+        const started = resolve().indexBackground(kbRefOf(a) ?? {}, opts, caller.sessionId)
         return {
           ok: true,
           value: started.started
