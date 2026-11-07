@@ -341,12 +341,13 @@ export function apply(ctx: Context): void {
     ctx.logger?.warn('dsh-kylin-vibe/rpc: seam 未挂载，RPC 通道未注册')
     return
   }
-  let provider: GraphRagProvider
-  try {
-    provider = service.resolve() as GraphRagProvider
-  } catch (error) {
-    ctx.logger?.warn(`dsh-kylin-vibe/rpc: provider 不可用，RPC 通道未注册: ${String(error)}`)
-    return
-  }
-  ctx.effect(() => registerKbRpc(ctx, () => provider), 'dsh-kylin-vibe: rpc registration')
+  // 路由无条件注册、provider 每次请求惰性解析：运行中的 profile 热装本 bundle
+  // 时，provider 行与 rpc 行是同一批新 entry，apply 先后顺序不保证——若在此
+  // 一次性 resolve()，provider 尚未注册时就会永久放弃注册，面板每次请求落到
+  // SPA fallback 的 405，只有重启宿主才恢复（0.1.5 修复）。provider 暂缺时由
+  // handleKbRpc 的 try/catch 转成 NO_PROVIDER 结果，面板轮询下轮即恢复。
+  ctx.effect(
+    () => registerKbRpc(ctx, pin => service.resolve(pin) as GraphRagProvider),
+    'dsh-kylin-vibe: rpc registration',
+  )
 }

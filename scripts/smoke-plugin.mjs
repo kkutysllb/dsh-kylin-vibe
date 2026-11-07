@@ -89,6 +89,21 @@ assert.deepEqual(registered.tools, [
 assert.equal(registered.sections.length, 1, '公告段应注入')
 assert.ok(registered.sections[0].text.includes('graphrag_query'))
 
+// ── 3b. rpc 通道：provider 未注册也必须先注册路由（v0.1.5 热安装修复）──────
+
+const rpcMod = await import(pathToFileURL(join(root, 'lib/rpc.js')).href)
+const rpcRoutes = []
+const rpcCtx = bootCtx({}).ctx
+rpcCtx.graphrag = new (seam.GraphRagServiceImpl)() // 空 seam：provider 尚未注册
+rpcCtx.webServer = {
+  register(route) { rpcRoutes.push(route); return () => {} },
+}
+rpcCtx.connection = { requestRejection: () => undefined }
+await rpcMod.apply(rpcCtx)
+assert.equal(rpcRoutes.length, 1, 'provider 缺席时 rpc 仍应注册通道')
+assert.equal(rpcRoutes[0].path, '/dsh-kylin-vibe', '通道路径不变')
+assert.equal(rpcRoutes[0].kind, 'prefix')
+
 // ── 4. 降级：seam 缺席 → tool 不挂载不崩溃 ───────────────────────────────────
 
 const noSeam = bootCtx({ withSeam: false })
