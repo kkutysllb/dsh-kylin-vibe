@@ -9,6 +9,7 @@
 
 | 版本 | 日期 | 说明 |
 |---|---|---|
+| [v0.1.5](v0.1.5.md) | 2026-11-07 | 热安装修复：RPC 通道改为「路由无条件注册 + provider 每次请求惰性解析」，插件管理安装/更新后无需重启宿主（此前面板一直报 `transport failure … HTTP 405`）；新增 4 项 RPC 回归测试 |
 | [v0.1.4](v0.1.4.md) | 2026-10-04 | 审计修复轮：设计文档×代码全量对照后修复 13 项落地缺口（cwd 解析/审查排除过滤/别名召回/CONTEXT_WINDOW 细分/0600/bridge 接线等）+ global LLM 分批打分 + 评测体系 v2（多跳题/MRR/门槛非劣性）+ local 排序重做（MRR 达结构上限 97.4%）+ 面板五件套（健康灯/预估卡/KB 遗忘/隔离重放/社区列表）+ 薄 d.ts + client 纳入 tsc + 设计文档全量回写 |
 | [v0.1.3](v0.1.3.md) | 2026-10-02 | 抽取模型跟随会话：建库表单选定的模型经 Agent 代建全链路生效，不再需要手改插件配置；NO_PROVIDER 改可操作指引 |
 | [v0.1.2](v0.1.2.md) | 2026-10-02 | 文档/图片知识抽取 + 知识库管理面 + 全量图谱视图：DOCX/PPTX/XLSX/PDF/图片多模态抽取；文档导入/来源管理表/变更同步/召回测试；浏览页双列布局 + Neo4j 风格全量图谱（世界坐标布局修结块、脏渲染修冻结、搜索/过滤/详情卡，2387 节点满帧率） |
@@ -83,4 +84,4 @@ git clone git@github.com:kkutysllb/dsh-plugins.git
 dsh plugin --profile web add ./dsh-plugins/dsh-kylin-vibe
 ```
 
-安装后重启 `dsh web`（或 KCoder / QiLin）生效。
+安装生效：KCoder / QiLin 桌面端经插件管理安装/更新后由 profile HMR 就地重载，**无需重启 app**（v0.1.5 起；此前 RPC 通道会缺席到重启，面板报 `transport failure … HTTP 405`）；命令行装进**另一个**正在运行的进程（如 `dsh web`）时没有跨进程热装通道，仍需重启该进程。

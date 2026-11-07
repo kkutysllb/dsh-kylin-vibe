@@ -6,7 +6,7 @@
 
 ## 用户指南
 
-**安装**（重启 `dsh web` / KCoder / QiLin 生效）：
+**安装**（KCoder / QiLin 桌面端经插件管理安装后热生效，无需重启；CLI 装进已运行的 `dsh web` 进程仍需重启该进程）：
 
 ```sh
 dsh plugin --profile web add dsh-kylin-vibe        # npm registry（推荐）
