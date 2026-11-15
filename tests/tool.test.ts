@@ -24,7 +24,15 @@ interface HostStub {
   registered: { agentTools: string[]; sections: { name: string; order: number; text: string }[] }
 }
 
-function hostStub(roots: unknown[] = []): HostStub & { listeners: Map<string, unknown> } {
+/** 宿主 agent 注册表形状（v0.1.6 兼容矩阵）：
+ * - `roots`：QiLin 3.x / 老版 DSH —— 有 roots()，注册表含根与子代理；
+ * - `list`：DSH ≥0.2.2-rc.2 —— 只有 list()，注册表里只剩根；
+ * - `both`：过渡期宿主两种都有；
+ * - `throwing`：roots()/list() 都抛错（注册表已释放等）；
+ * - `none`：服务存在但没有任何读法。 */
+type RegistryShape = 'roots' | 'list' | 'both' | 'throwing' | 'none'
+
+function hostStub(roots: unknown[] = [], shape: RegistryShape = 'roots'): HostStub & { listeners: Map<string, unknown>; agents: unknown[] } {
   const registered = { agentTools: [] as string[], sections: [] as { name: string; order: number; text: string }[] }
   const listeners = new Map<string, unknown>()
   const makeScoped = (): Context => {
@@ -42,6 +50,16 @@ function hostStub(roots: unknown[] = []): HostStub & { listeners: Map<string, un
   const agents = [
     { id: 'agent-1', session: { id: 'sess-1', header: { cwd: '/ws' } }, ctx: makeScoped() },
   ]
+  const live = roots.length > 0 ? roots : agents
+  const throwing = (): never => { throw new TypeError('agents.roots is not a function') }
+  const registry: Record<string, unknown> = { on: (_e: string, _cb: unknown) => () => {} }
+  if (shape === 'throwing') {
+    registry['roots'] = throwing
+    registry['list'] = throwing
+  } else {
+    if (shape === 'roots' || shape === 'both') registry['roots'] = () => live
+    if (shape === 'list' || shape === 'both') registry['list'] = () => live
+  }
   const ctx = {
     graphrag: undefined,
     logger: { warn: (_m: string) => {} },
@@ -52,9 +70,9 @@ function hostStub(roots: unknown[] = []): HostStub & { listeners: Map<string, un
     },
     tools: { register: (_def: unknown) => () => {} },
     systemPrompt: { section(s: { name: string; order: number; text: string }) { registered.sections.push(s); return () => {} } },
-    agents: { roots: () => roots.length > 0 ? roots : agents, on: (_e: string, _cb: unknown) => () => {} },
+    agents: registry,
   }
-  return { ctx: ctx as unknown as Context, registered, listeners }
+  return { ctx: ctx as unknown as Context, registered, listeners, agents }
 }
 
 // ── 被测组合：seam + provider（oracle）+ 工具 ───────────────────────────────
@@ -294,5 +312,44 @@ describe('apply 挂载接线（seam → 工具面）', () => {
     applyTools(stub.ctx, {})
     assert.equal(stub.registered.agentTools.length, 0)
     assert.equal(stub.registered.sections.length, 0)
+  })
+
+  // ── v0.1.6 回归：DSH 0.2.2-rc.3 删除 AgentRegistry.roots() 导致安装失败 ──────
+
+  test('回归 DSH ≥0.2.2-rc.2：注册表只有 list()（无 roots）→ 激活不抛错、5 工具照常挂载', () => {
+    const stub = hostStub([], 'list')
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    assert.doesNotThrow(() => { applyTools(stub.ctx, {}) }, 'ctx.agents.roots is not a function 不得再冒泡到激活期')
+    assert.equal(stub.registered.agentTools.length, 5)
+  })
+
+  test('回归：注册表两种读法都抛错 → apply 不抛错（不判定安装失败），agent/created 仍能挂载', () => {
+    const stub = hostStub([], 'throwing')
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    assert.doesNotThrow(() => { applyTools(stub.ctx, {}) })
+    assert.equal(stub.registered.agentTools.length, 0)
+    const created = stub.listeners.get('agent/created') as (p: unknown) => void
+    created(stub.agents[0])
+    assert.equal(stub.registered.agentTools.length, 5)
+  })
+
+  test('回归：注册表没有任何读法（agents={}）→ apply 不抛错，事件兜底挂载', () => {
+    const stub = hostStub([], 'none')
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    assert.doesNotThrow(() => { applyTools(stub.ctx, {}) })
+    const created = stub.listeners.get('agent/created') as (p: unknown) => void
+    created(stub.agents[0])
+    assert.equal(stub.registered.agentTools.length, 5)
+  })
+
+  test('兼容保留：roots() 存在时仍按根集过滤，子代理不重复挂载', () => {
+    const stub = hostStub([], 'roots')
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    applyTools(stub.ctx, {})
+    assert.equal(stub.registered.agentTools.length, 5)
+    const created = stub.listeners.get('agent/created') as (p: unknown) => void
+    const scoped = (stub.agents[0] as { ctx: unknown }).ctx
+    created({ agent: { id: 'child-1', session: { id: 'sess-child' }, ctx: scoped } })
+    assert.equal(stub.registered.agentTools.length, 5, '子代理不属于根集，不应再挂 5 个工具')
   })
 })

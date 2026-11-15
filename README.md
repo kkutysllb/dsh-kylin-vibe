@@ -10,9 +10,11 @@
 
 ```sh
 dsh plugin --profile web add dsh-kylin-vibe        # npm registry（推荐）
-dsh plugin --profile web add github:kkutysllb/dsh-kylin-vibe#v0.1.0   # GitHub 直装
+dsh plugin --profile web add github:kkutysllb/dsh-kylin-vibe#v0.1.6   # GitHub 直装
 qilin plugin --profile <name> add dsh-kylin-vibe   # QiLin 通道（需 3.0.0+）
 ```
+
+> **兼容性（v0.1.6 起）**：DSH 0.2.2-rc.2 起上游删除了 `AgentRegistry.roots()`（子代理血缘由 subagent 服务拥有），**v0.1.5 及更早版本在该版本宿主上安装/启动即失败**，报 `ctx.agents.roots is not a function or its return value is not iterable`。v0.1.6 起改为 `roots()` → `list()` → 空表降级（激活期永不抛错），DSH ≥ 0.2.2-rc.2 与 QiLin 3.x 同时可用。装过旧版的 profile 升级到 0.1.6 即恢复。
 
 **用起来**（三条入口）：
 

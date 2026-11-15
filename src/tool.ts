@@ -346,6 +346,48 @@ export function approvalDecision(
 
 export const ANNOUNCEMENT = `本工作区已启用 dsh-kylin-vibe 插件（知识图谱检索）：把授权语料索引成实体-关系-社区图谱，供任务推理时做结构化检索。工具：graphrag_query（local=关系性问题 / global=全局架构问题）、graphrag_graph（多跳遍历，影响面分析 direction=in）、graphrag_status（覆盖与新鲜度）、graphrag_index（建图/增量更新，需审批）、graphrag_forget（遗忘，需审批）。三个非显然约束：① 引用结论必须落到返回 chunks 的原文位置（path+lines），communities 摘要是 LLM 二手信息仅供参考；② graphrag_status 显示陈旧度高时先 graphrag_index 增量更新再检索；③ 精确文本查找仍优先 grep/glob，图谱解决的是"关联/全局"类问题。`
 
+// ── 宿主 agent 注册表兼容（DSH ≥0.2.2-rc.2 / QiLin 3.x）─────────────────────
+
+/** 注册表读取面：只读探测，永不让 apply 因宿主版本抛错。
+ *
+ * DSH commit b3d4933f39f（dsh 0.2.2-rc.2 起）把子代理血缘由 subagent 服务拥有，
+ * 从 AgentRegistry 删除了 `roots()` 与 `ownerAgent`；QiLin 3.x 与老版 DSH 仍只有
+ * `roots()`。读法优先级：`roots()`（根集）→ `list()`（该版本注册表里只剩根）→
+ * 空表（靠 `agent/created` 兜底）。任何一次读取抛错都降级为空表——激活期抛错会被
+ * 插件管理器判定为「安装失败」，这是 v0.1.5 在 dsh 0.2.2-rc.3 上装不上的原因。 */
+interface AgentRegistryLike {
+  readonly roots?: unknown
+  readonly list?: unknown
+}
+
+const EMPTY_AGENTS: readonly unknown[] = []
+
+function readLiveAgents(ctx: Context): { readonly agents: readonly unknown[]; readonly rootsOnly: boolean } {
+  const registry = (ctx as Context & { agents?: AgentRegistryLike }).agents
+  if (registry === undefined) return { agents: EMPTY_AGENTS, rootsOnly: false }
+  for (const [method, rootsOnly] of [[registry.roots, true], [registry.list, false]] as const) {
+    if (typeof method !== 'function') continue
+    try {
+      const value = (method as () => unknown).call(registry)
+      if (Array.isArray(value)) return { agents: value, rootsOnly }
+      if (value !== null && typeof value === 'object' && typeof (value as Iterable<unknown>)[Symbol.iterator] === 'function') {
+        return { agents: [...(value as Iterable<unknown>)], rootsOnly }
+      }
+    } catch {
+      // 注册表不可读（已释放 / 宿主变体）→ 尝试下一种读法
+    }
+  }
+  return { agents: EMPTY_AGENTS, rootsOnly: false }
+}
+
+/** 是否允许在该 agent 上挂工具：能判定根集时只挂根；判定不了就放行。
+ * 子代理上多挂一份是噪声，安装期抛错才是故障。 */
+function isMountableAgent(ctx: Context, agentId: string): boolean {
+  const { agents, rootsOnly } = readLiveAgents(ctx)
+  if (!rootsOnly) return true
+  return agents.some(agent => (agent as { id?: unknown } | undefined)?.id === agentId)
+}
+
 // ── 插件入口 ─────────────────────────────────────────────────────────────────
 
 export const name = 'dsh-kylin-vibe/tool'
@@ -372,18 +414,23 @@ export function apply(ctx: Context, config: ToolConfig = {}): void {
     const agentId = typeof scoped?.id === 'string' ? scoped.id : undefined
     const sessionId = typeof scoped?.session?.id === 'string' ? scoped.session.id : undefined
     if (agentId === undefined || sessionId === undefined || scoped.ctx === undefined) return
-    if (!ctx.agents!.roots().some(root => (root as { id?: unknown }).id === agentId)) return
+    if (!isMountableAgent(ctx, agentId)) return
     if (agentTools.has(sessionId)) return
-    const registered = scoped.ctx.effect(() => {
-      const removers = defs.map(def => scoped.ctx!.tools!.register(def))
-      return () => { for (const remove of [...removers].reverse()) void remove() }
-    }, 'dsh-kylin-vibe: agent tools') as () => void
-    // pre-execute 只能看到 caller.sessionId —— 键控必须用 sessionId
-    // （agentId 与 sessionId 在不同宿主不保证相等）。
-    agentTools.set(sessionId, registered)
+    try {
+      const registered = scoped.ctx.effect(() => {
+        const removers = defs.map(def => scoped.ctx!.tools!.register(def))
+        return () => { for (const remove of [...removers].reverse()) void remove() }
+      }, 'dsh-kylin-vibe: agent tools') as () => void
+      // pre-execute 只能看到 caller.sessionId —— 键控必须用 sessionId
+      // （agentId 与 sessionId 在不同宿主不保证相等）。
+      agentTools.set(sessionId, registered)
+    } catch (error: unknown) {
+      // 挂载失败不升级为激活失败：插件管理器会把 apply 抛错当安装失败。
+      ctx.logger?.warn(`dsh-kylin-vibe: agent tool mount failed (${agentId}): ${String(error)}`)
+    }
   }
 
-  for (const root of ctx.agents!.roots()) mountTools(root)
+  for (const agent of readLiveAgents(ctx).agents) mountTools(agent)
   owned.push(ctx.on('agent/created', (payload: unknown) => { mountTools((payload as { agent?: unknown })?.agent ?? payload) }))
   owned.push(ctx.on('agent/disposed', (payload: unknown) => {
     const agent = (payload as { agent?: { session?: { id?: string } } } | undefined)?.agent
