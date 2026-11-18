@@ -5,7 +5,7 @@
  * 时拦截）、公告段单段有界。错误码 → 模型短文案映射见 0204 §5。
  */
 
-import { callerFrom, type ToolCaller } from './adapter.ts'
+import { approvalPolicyOf, callerFrom, sandboxModeOf, type ApprovalPolicy, type SandboxMode, type ToolCaller } from './adapter.ts'
 import { ERROR_CODES, GraphRagError, type EvidencePack, type ErrorCode, type IndexReport, type IndexStatus, type Subgraph } from './core/types.ts'
 import type { GraphRagProvider, GraphRagService, IndexOptions, KbRef } from './index.ts'
 import type { Context } from '@deepseek-ai/cordis'
@@ -68,6 +68,10 @@ export interface ToolServices {
 export interface ToolConfig {
   /** 多 provider 时 pin（缺省自动选择）。 */
   readonly providerPin?: string
+  /** 变更工具（graphrag_index / graphrag_forget）审批门：
+   * 'ask'（缺省）= 需用户审批；'allow' = 部署方预授权无人值守执行，跳过审批卡
+   * （LLM 成本与销毁风险由部署方承担）。 */
+  readonly mutatingApproval?: 'ask' | 'allow'
 }
 
 const jsonRender = (_args: unknown, value: unknown): readonly { type: 'text'; text: string }[] => [
@@ -293,13 +297,49 @@ export interface ApprovalAsk {
   readonly displayReason: { readonly en: string; readonly zh: string }
 }
 
-/** 一个 ask 决策（0.1.7 双面文案：reason 审计 / displayReason 本地化），或 undefined。 */
+/** 门控决策的运行时上下文（0204 §3）：会话审批策略 + 沙箱模式 + 插件预授权配置。 */
+export interface GateOptions {
+  /** 调用会话的有效审批策略；undefined = 探测失败（按 'ask' 处理，行为不变）。 */
+  readonly approvalPolicy?: ApprovalPolicy | undefined
+  /** 调用会话的有效沙箱模式；undefined = 探测失败（不参与决策）。 */
+  readonly sandboxMode?: SandboxMode | undefined
+  /** 插件配置 mutatingApproval；'allow' = 部署方预授权，跳过审批门。 */
+  readonly mutatingApproval?: 'ask' | 'allow' | undefined
+}
+
+/** 非交互会话（approval policy = never）的门控拒绝文案。
+ *
+ * 宿主对 ask 会确定性自动拒绝，并向模型显示 "the user rejected tool"——
+ * 并非用户拒绝（user-approval：'never' 策略先于任何应答者直接解析
+ * 'rejected'）。审批门必须改走拒绝路径，把真实原因与可操作出路交给模型，
+ * 而不是问一个必败的问题。 */
+function noApprovalDenial(name: string): string {
+  const panelPath = name === 'graphrag_index'
+    ? '让用户在侧边栏「知识图谱」面板选中/新建知识库后点「索引」（该入口即用户授权，不经过本工具审批门）'
+    : '让用户在侧边栏「知识图谱」面板执行对应删除（该入口即用户授权，不经过本工具审批门）'
+  const preauth = name === 'graphrag_index'
+    ? '在插件配置 graphrag-tools 行设 mutatingApproval: "allow" 预授权无人值守索引'
+    : '在插件配置 graphrag-tools 行设 mutatingApproval: "allow" 预授权（销毁性操作，风险自担）'
+  return `${name} 需用户审批，但本会话禁用了审批提示（approval policy = never），审批请求会被自动拒绝——宿主显示的 "the user rejected tool" 是自动拒绝，不是用户拒绝。不要重试本调用；可行路径：① ${panelPath}；② 改由允许审批的交互会话执行（委派场景交回发起会话）；③ ${preauth}后重试。`
+}
+
+/** 一个 ask 决策（0.1.7 双面文案：reason 审计 / displayReason 本地化）、
+ * 非交互会话的拒绝决策（可操作文案），或 undefined（不拦截）。 */
 export function approvalDecision(
   exec: { readonly name: string; readonly arguments?: unknown; readonly signal: AbortSignal },
   mounted: boolean,
   estimate?: (target: KbRef | undefined, opts: IndexOptions, cwd?: string) => { readonly files: number; readonly estCalls: number },
-): ({ readonly kind: 'ask' } & ApprovalAsk) | undefined {
+  gate: GateOptions = {},
+): ({ readonly kind: 'ask' } & ApprovalAsk) | { readonly kind: 'deny'; readonly reason: string } | undefined {
   if (!mounted || exec.signal.aborted || !MUTATING_TOOLS.has(exec.name)) return undefined
+  if (gate.mutatingApproval === 'allow') return undefined
+  // 「完全权限」预设（sandbox danger-full-access + approval never 同写）是桌面端
+  // 预授权语义：引擎原生工具在 full-access 下直接执行不问（「权限或审批二选一」，
+  // plugin-manager 描述即如此）。沙箱已放开时审批门整体让路——这里再问只会把
+  // 预设语义变成故障（never 会话的 ask 被宿主确定性拒绝）。graphrag_forget 同理：
+  // 预设描述明确含「敏感操作」。
+  if (gate.sandboxMode === 'danger-full-access') return undefined
+  if (gate.approvalPolicy === 'never') return { kind: 'deny', reason: noApprovalDenial(exec.name) }
   const caller = callerFrom(exec)
   if (exec.name === 'graphrag_index') {
     const a = (exec.arguments ?? {}) as Record<string, unknown>
@@ -458,6 +498,11 @@ export function apply(ctx: Context, config: ToolConfig = {}): void {
       exec as { name: string; arguments?: unknown; signal: AbortSignal },
       isMounted,
       estimateOf(),
+      {
+        approvalPolicy: approvalPolicyOf(ctx, exec),
+        sandboxMode: sandboxModeOf(ctx, exec),
+        mutatingApproval: config.mutatingApproval === 'allow' ? 'allow' : 'ask',
+      },
     )
     return decision ?? downstream
   }))

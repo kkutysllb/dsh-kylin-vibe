@@ -274,6 +274,68 @@ describe('审批门（0204 §3 边界）', () => {
     assert.ok(d?.kind === 'ask')
     assert.ok(!d.reason.includes('undefined'))
   })
+
+  test('回归 policy=never：不让 ask 自动落败——拒绝 + 真实原因 + 可操作出路', () => {
+    // 宿主对 never 会话的 ask 会确定性解析 rejected，模型看到
+    // "the user rejected tool"（并非用户拒绝）。审批门必须改走拒绝路径。
+    const est = (): { files: number; estCalls: number } => ({ files: 2, estCalls: 3 })
+    const signal = new AbortController().signal
+    const index = approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { approvalPolicy: 'never' })
+    assert.equal(index?.kind, 'deny')
+    const indexReason = (index as { reason: string }).reason
+    assert.ok(indexReason.includes('approval policy = never'), '说明真实原因')
+    assert.ok(indexReason.includes('"the user rejected tool"'), '澄清宿主文案是自动拒绝')
+    assert.ok(indexReason.includes('不是用户拒绝'), '不得冒充用户否决')
+    assert.ok(indexReason.includes('知识图谱') && indexReason.includes('「索引」'), '给出面板出路')
+    assert.ok(indexReason.includes('mutatingApproval'), '给出配置出路')
+    assert.ok(indexReason.includes('不要重试'), '防重试循环')
+
+    const forget = approvalDecision(
+      { name: 'graphrag_forget', arguments: { target: { kind: 'graph' } }, signal },
+      true,
+      undefined,
+      { approvalPolicy: 'never' },
+    )
+    assert.equal(forget?.kind, 'deny')
+    const forgetReason = (forget as { reason: string }).reason
+    assert.ok(forgetReason.includes('graphrag_forget') && forgetReason.includes('删除'), 'forget 文案指向删除入口')
+
+    // ask 会话（或探测失败）行为不变：照常 ask
+    const askMode = approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { approvalPolicy: 'ask' })
+    assert.equal(askMode?.kind, 'ask')
+    const unknown = approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, {})
+    assert.equal(unknown?.kind, 'ask')
+  })
+
+  test('回归 mutatingApproval=allow：预授权后审批门整体放行', () => {
+    const signal = new AbortController().signal
+    assert.equal(approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, undefined, { mutatingApproval: 'allow' }), undefined)
+    assert.equal(
+      approvalDecision({ name: 'graphrag_forget', arguments: { target: { kind: 'graph' } }, signal }, true, undefined, { approvalPolicy: 'never', mutatingApproval: 'allow' }),
+      undefined,
+    )
+  })
+
+  test('回归 完全权限预设：sandbox danger-full-access → 放行（引擎原生工具「权限或审批二选一」同款）', () => {
+    // 桌面端「完全权限」预设 = sandbox full + approval never 同写：用户已预授权
+    // （预设描述明确含「敏感操作」），审批门再问必败（never 的 ask 被宿主确定性拒绝）。
+    const signal = new AbortController().signal
+    const est = (): { files: number; estCalls: number } => ({ files: 2, estCalls: 3 })
+    // full + never：放行（本缺陷的主场景）
+    assert.equal(approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }), undefined)
+    // full + ask（Auto 预设）：沙箱已放开即授权，同样放行
+    assert.equal(approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { sandboxMode: 'danger-full-access', approvalPolicy: 'ask' }), undefined)
+    // forget 同语义（销毁性操作含在预设授权内）
+    assert.equal(
+      approvalDecision({ name: 'graphrag_forget', arguments: { target: { kind: 'graph' } }, signal }, true, undefined, { sandboxMode: 'danger-full-access', approvalPolicy: 'never' }),
+      undefined,
+    )
+    // confined + never：仍走拒绝路径（无人值守 fail-closed，不回归）
+    const denied = approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { sandboxMode: 'workspace-write', approvalPolicy: 'never' })
+    assert.equal(denied?.kind, 'deny')
+    // 沙箱探测失败 + never：fail-closed 不变
+    assert.equal(approvalDecision({ name: 'graphrag_index', arguments: {}, signal }, true, est, { approvalPolicy: 'never' })?.kind, 'deny')
+  })
 })
 
 describe('apply 挂载接线（seam → 工具面）', () => {
@@ -305,6 +367,58 @@ describe('apply 挂载接线（seam → 工具面）', () => {
       async () => ({ kind: 'allow' }),
     )
     assert.deepEqual(passthrough, { kind: 'allow' })
+  })
+
+  test('回归：never 会话 pre-execute 直接拒绝（不产生必败 ask）；mutatingApproval=allow 放行', async () => {
+    // 宿主 ApprovalService 在 never 会话把 ask 确定性解析 rejected 并显示
+    // "the user rejected tool"（并非用户拒绝）——pre-execute 必须提前改道。
+    const stub = hostStub()
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    ;(stub.ctx as unknown as { reflect?: unknown }).reflect = {
+      get: (name: string) => (name === 'approval' ? { overrideOf: () => 'never', config: { policy: 'ask' } } : undefined),
+    }
+    applyTools(stub.ctx, {})
+    const hook = stub.listeners.get('tools/pre-execute') as
+      (exec: unknown, next: () => Promise<{ kind: string }>) => Promise<unknown>
+    const exec = {
+      name: 'graphrag_index', arguments: {}, signal: new AbortController().signal,
+      agent: { session: { id: 'sess-1', header: { cwd: join(dir, 'docs') } } },
+    }
+    const decision = await hook(exec, async () => ({ kind: 'allow' }))
+    assert.equal((decision as { kind: string }).kind, 'deny')
+    assert.ok((decision as { reason: string }).reason.includes('不是用户拒绝'), '拒绝文案必须澄清自动拒绝')
+
+    // 预授权配置 → 放行（即使 never 会话）
+    const stub2 = hostStub()
+    ;(stub2.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    ;(stub2.ctx as unknown as { reflect?: unknown }).reflect = {
+      get: (name: string) => (name === 'approval' ? { overrideOf: () => 'never' } : undefined),
+    }
+    applyTools(stub2.ctx, { mutatingApproval: 'allow' })
+    const hook2 = stub2.listeners.get('tools/pre-execute') as typeof hook
+    const decision2 = await hook2(exec, async () => ({ kind: 'allow' }))
+    assert.deepEqual(decision2, { kind: 'allow' })
+  })
+
+  test('回归：完全权限预设（approval never + sandbox full）pre-execute 放行，不再误拒', async () => {
+    // 桌面端「完全权限」= sandbox danger-full-access + approval never 两旋钮同写；
+    // 审批门必须识别沙箱半边并让路——否则比「工作区修改」还严（语义倒挂）。
+    const stub = hostStub()
+    ;(stub.ctx as unknown as { graphrag?: unknown }).graphrag = service
+    ;(stub.ctx as unknown as { reflect?: unknown }).reflect = {
+      get: (name: string) => name === 'approval'
+        ? { overrideOf: () => 'never', config: { policy: 'ask' } }
+        : name === 'sandboxPolicy' ? { resolve: () => ({ mode: 'danger-full-access' }) } : undefined,
+    }
+    applyTools(stub.ctx, {})
+    const hook = stub.listeners.get('tools/pre-execute') as
+      (exec: unknown, next: () => Promise<{ kind: string }>) => Promise<unknown>
+    const exec = {
+      name: 'graphrag_index', arguments: {}, signal: new AbortController().signal,
+      agent: { session: { id: 'sess-1', header: { cwd: join(dir, 'docs') } } },
+    }
+    const decision = await hook(exec, async () => ({ kind: 'allow' }))
+    assert.deepEqual(decision, { kind: 'allow' }, '完全权限下 index 不拦截，直接沿 downstream 放行')
   })
 
   test('seam 缺席 → 降级：不挂载工具、不注公告、仅告警', () => {

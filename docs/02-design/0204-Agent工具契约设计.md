@@ -157,6 +157,43 @@
 
 估算来源：dry-run 的 `diffDirty` 结果 × 0203 成本模型。
 
+### 3.1 门控决策矩阵（0.1.7 起）
+
+发 `ask` 之前先看三件事：调用会话的**有效审批策略**（宿主 user-approval 的
+`approval/policy` 会话覆盖 → 服务默认；`src/adapter.ts` 的 `approvalPolicyOf`
+鸭子型探测，探测失败按 `ask` 处理）、**有效沙箱模式**（`sandboxPolicy.resolve`
+的 `mode`；`sandboxModeOf` 同款探测，探测失败不参与决策）与插件配置
+`mutatingApproval`（`graphrag-tools` 行）：
+
+| 会话沙箱模式 | 会话审批策略 | `mutatingApproval` | 决策 | 说明 |
+|---|---|---|---|---|
+| `danger-full-access` | 任意 | `ask`（缺省） | 不拦截 | 完全权限即预授权（见下）；`graphrag_forget` 同语义 |
+| 其余 / 探测失败 | `ask`（或探测失败） | `ask`（缺省） | `ask` | 审批卡 + dry-run 估算，用户确认后执行 |
+| 其余 / 探测失败 | `never` | `ask`（缺省） | `deny` | 真实原因 + 可操作出路（见下） |
+| 任意 | 任意 | `allow` | 不拦截 | 部署方预授权无人值守执行，LLM 成本/销毁风险自担 |
+
+**完全权限分支**：两引擎的「完全权限」权限预设 = `sandbox: danger-full-access`
++ `approval: never` **两旋钮同写**（base bundle 同款）；预设语义是「减少确认
+步骤、可直接执行敏感操作」。引擎原生工具的约定是「danger-full-access 权限
+**或** approval 二选一」（如 plugin-manager：`requires danger-full-access
+permission or approval`）——权限已放开就不再问。审批门若无视沙箱半边，在完全
+权限会话里发 `ask` 必被宿主确定性拒绝，出现「完全权限比工作区修改更严」的
+语义倒挂（用户上报 2026-11-18）。故沙箱 full-access 时审批门整体让路，
+`graphrag_forget` 一致（预设授权含敏感操作）。
+
+**never 拒绝分支**：受限沙箱（或沙箱探测失败）+ `never` 是无人值守姿态
+（委派子代理固定种子 `approval/policy: never`、headless、受限预设）。宿主把
+每个 `ask` **确定性解析为 `rejected`**（user-approval 的 `decide`：never 策略
+先于任何应答者直接返回 rejected），并向模型显示 `the user rejected tool "…"`
+——并非用户拒绝。若审批门照旧发 `ask`：调用必败，且模型把失败归因于
+「用户否决」，后续行为（放弃任务/反复追问）全部建立在错误归因上。故改走
+`deny`，文案达成三个目的：
+
+1. 澄清真实原因（自动拒绝，不是用户拒绝），并明确「不要重试本调用」；
+2. 给出不经过工具审批门的用户直接入口：面板「索引」/删除（用户操作即授权）；
+3. 给出两条配置/会话出路：交回允许审批的交互会话（委派场景）、
+   `mutatingApproval: "allow"` 预授权。
+
 ## 4. 能力公告段（systemPrompt 注入）
 
 ≤ 400 字，风格对齐 automation 公告（工具名册 + 非显然约束）：

@@ -52,6 +52,83 @@ export function callerFrom(exec: unknown): ToolCaller {
   return out
 }
 
+// ── 审批策略探测 ─────────────────────────────────────────────────────────────
+
+/** 宿主审批策略（dsh-user-approval / QiLin user-approval 同源契约）：
+ * 'ask' 交互决策；'never' 禁用审批提示，每个 ask 被确定性自动拒绝。 */
+export type ApprovalPolicy = 'ask' | 'never'
+
+/** ApprovalService 读取面（鸭子型）：会话覆盖 + 部署默认。 */
+interface ApprovalServiceLike {
+  readonly config?: { readonly policy?: unknown }
+  readonly overrideOf?: (session: unknown) => unknown
+}
+
+/** 调用会话的有效审批策略（0204 §3 门控决策用）。
+ *
+ * 'never' 会话（委派子代理固定种子、headless/预设切换）里，宿主把每个 ask
+ * 确定性解析为 'rejected' 并向模型显示 "the user rejected tool"——并非用户
+ * 拒绝。审批门需据此改走拒绝路径给出可操作文案，而不是问一个必败的问题。
+ * 读取顺序：会话 `approval/policy` 覆盖（overrideOf）→ 服务默认（config.policy）。
+ * 服务缺席、方法缺失、读取抛错一律返回 undefined——由调用方按 'ask' 处理，
+ * 保持既有审批门行为（0205 §1 适配层永不抛错纪律）。 */
+export function approvalPolicyOf(ctx: Context, exec: unknown): ApprovalPolicy | undefined {
+  try {
+    const c = ctx as Context & { get?: (name: string) => unknown }
+    const raw = c.reflect?.get?.('approval', false)
+      ?? c.get?.('approval')
+      ?? (ctx as { approval?: unknown }).approval
+    if (raw === null || typeof raw !== 'object') return undefined
+    const service = raw as ApprovalServiceLike
+    const session = (exec as { agent?: { session?: unknown } } | null | undefined)?.agent?.session
+    let policy: unknown
+    if (session !== undefined && typeof service.overrideOf === 'function') policy = service.overrideOf(session)
+    if (policy === undefined) policy = service.config?.policy
+    return policy === 'never' || policy === 'ask' ? policy : undefined
+  } catch {
+    return undefined
+  }
+}
+
+// ── 沙箱模式探测 ─────────────────────────────────────────────────────────────
+
+/** 会话沙箱模式（dsh-sandbox / QiLin sandbox 同源契约）。 */
+export type SandboxMode = 'read-only' | 'workspace-write' | 'danger-full-access'
+
+const SANDBOX_MODE_VALUES: readonly SandboxMode[] = ['read-only', 'workspace-write', 'danger-full-access']
+
+/** SandboxPolicy 读取面（鸭子型）：resolve 返回会话当前生效策略。 */
+interface SandboxPolicyLike {
+  readonly resolve?: (query: unknown) => { readonly mode?: unknown } | undefined
+}
+
+/** 调用会话的有效沙箱模式（0204 §3 门控决策用）。
+ *
+ * 「完全权限」权限预设 = `sandbox: danger-full-access` + `approval: never`
+ * 两旋钮同写（两引擎 base bundle 同款）；引擎原生工具的约定是
+ * 「danger-full-access 权限**或** approval 二选一」——权限已放开就不再问
+ * （如 plugin-manager：`requires danger-full-access permission or approval`）。
+ * 审批门据此区分预设语义：full-access + never 是桌面预授权（放行），
+ * confined + never 才是无人值守 fail-closed（拒绝）。
+ * 读取顺序与降级纪律同 approvalPolicyOf：任何异常返回 undefined。 */
+export function sandboxModeOf(ctx: Context, exec: unknown): SandboxMode | undefined {
+  try {
+    const c = ctx as Context & { get?: (name: string) => unknown }
+    const raw = c.reflect?.get?.('sandboxPolicy', false)
+      ?? c.get?.('sandboxPolicy')
+      ?? (ctx as { sandboxPolicy?: unknown }).sandboxPolicy
+    if (raw === null || typeof raw !== 'object') return undefined
+    const service = raw as SandboxPolicyLike
+    if (typeof service.resolve !== 'function') return undefined
+    const session = (exec as { agent?: { session?: unknown } } | null | undefined)?.agent?.session
+    const policy = service.resolve(session === undefined ? {} : { session })
+    const mode = (policy as { mode?: unknown } | undefined | null)?.mode
+    return SANDBOX_MODE_VALUES.includes(mode as SandboxMode) ? mode as SandboxMode : undefined
+  } catch {
+    return undefined
+  }
+}
+
 // ── 能力探测 ─────────────────────────────────────────────────────────────────
 
 export interface HostCapabilities {
